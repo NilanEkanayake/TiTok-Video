@@ -1,0 +1,15 @@
+decord
+diffusers
+einops
+gdown
+huggingface_hub
+numpy
+omegaconf
+opencv_python
+opencv_python_headless
+PyYAML
+Requests
+scipy
+torch>=2.5.0
+torchvision
+tqdm
