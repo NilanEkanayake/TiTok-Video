@@ -19,7 +19,9 @@ wget https://huggingface.co/NilanE/TiTok-Video-64tokens-8Kcodes-exp/resolve/main
 To use, run inference.ipynb in jupyterlab (or colab, maybe?)
 
 ## Uses code from:
+```
 https://github.com/bytedance/1d-tokenizer
 https://github.com/ShivamDuggal4/adaptive-length-tokenizer
 https://github.com/lucidrains/vector-quantize-pytorch
 https://github.com/PKU-YuanGroup/WF-VAE
+```
