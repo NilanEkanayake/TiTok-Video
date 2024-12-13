@@ -1,0 +1,33 @@
+model:
+    pretrained_vae:
+        type: wfvae
+        path: base_tokenizer/pretrained_model # point to a folder containing the vae's files from HF.
+        latent_channels: 16
+        temporal_compression: 4
+        spatial_compression: 8
+        vae_dtype: "bf16" 
+    titok:
+        vit_enc_temporal_patch_size: 4
+        vit_enc_spatial_patch_size: 8
+
+        num_latent_tokens: 64
+
+        quant_mode: "fsq"
+        fsq_levels: [8, 8, 5, 5, 5]
+
+        # vit arch
+        vit_enc_model_size: "small"
+        vit_dec_model_size: "small"
+        attn_and_mlp_residual: True
+
+video_dataset:
+    params:
+        num_frames: 16 # -3 in the recon due to pretrained causal VAE
+        resolution: 192
+
+training:
+    torch_compile: True
+    torch_compile_mode: "reduce-overhead"
+    torch_compile_backend: "inductor"
+    enable_tf32: True
+    seed: 42
