@@ -6,7 +6,7 @@ https://huggingface.co/NilanE/TiTok-Video-64tokens-8Kcodes-exp
 
 Compresses 192p, 16 (13) frame videos to 64 tokens, with a codebook size of ~8000. Very poor quality. Since the pretrained VAE used is causal, the three final frames are cut from the reconstruction.
 
-The model was trained for a few hours on a single 4090, with 60k clips from miradata. The image quality is, frankly, garbage. This is meant as a proof-of-concept more than anything else.
+The model was trained for a few hours on a single 4090, with ~80k clips from miradata (see the dataset linked below). The image quality is, frankly, garbage. This is meant as a proof-of-concept more than anything else.
 
 ```
 python3 -m pip install -r requirements.txt
