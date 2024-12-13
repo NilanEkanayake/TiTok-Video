@@ -21,10 +21,12 @@ from omegaconf import OmegaConf
 from pathlib import Path
 from model.base.distillation_modules import TiTokEncoder, TiTokDecoder
 from model.base.base_model import BaseModel
-from model.quantizer.finite_scalar_quantization import FSQ
+from model.quantizer.vae import SampleVAE
+from model.quantizer.fsq import FSQ
+from model.quantizer.bsq import BSQQuantizer
 from huggingface_hub import PyTorchModelHubMixin
 
-class TiTok(BaseModel, PyTorchModelHubMixin, tags=["arxiv:2406.07550", "video-tokenization"], repo_url="https://github.com/bytedance/1d-tokenizer", license="apache-2.0"):
+class TiTok(BaseModel, PyTorchModelHubMixin, tags=["arxiv:2304.12244", "video-tokenization"], license="mit"):
     def __init__(self, config):
 
         if isinstance(config, dict):
@@ -33,15 +35,24 @@ class TiTok(BaseModel, PyTorchModelHubMixin, tags=["arxiv:2406.07550", "video-to
         super().__init__()
         self.config = config
 
-        self.quant_mode = config.model.vq_model.quant_mode
+        self.quant_mode = config.model.titok.quant_mode
 
-        self.quantize = FSQ(config.model.vq_model.fsq_levels)
-        self.token_size = len(config.model.vq_model.fsq_levels)
+        if self.quant_mode == "fsq":
+            self.quantize = FSQ(config.model.titok.fsq_levels)
+            self.token_size = len(config.model.titok.fsq_levels)
+        elif self.quant_mode == "vae":
+            self.quantize = SampleVAE()
+            self.token_size = config.model.titok.token_size
+        elif self.quant_mode == "bsq":
+            self.quantize = BSQQuantizer(config)
+            self.token_size = config.model.titok.token_size
+        else:
+            raise Exception(f"Unknown quant mode: {self.quant_mode}")
         
         self.encoder = TiTokEncoder(config, self.token_size)
         self.decoder = TiTokDecoder(config, self.token_size)
 
-        self.num_latent_tokens = config.model.vq_model.num_latent_tokens
+        self.num_latent_tokens = config.model.titok.num_latent_tokens
         scale = self.encoder.width ** -0.5
         self.latent_tokens = nn.Parameter(scale * torch.randn(self.num_latent_tokens, self.encoder.width))
         
@@ -74,7 +85,7 @@ class TiTok(BaseModel, PyTorchModelHubMixin, tags=["arxiv:2406.07550", "video-to
             module.weight.data.fill_(1.0)
 
     def encode(self, x):
-        z = self.encoder(x, latent_tokens=self.latent_tokens)
+        z = self.encoder(pixel_values=x, latent_tokens=self.latent_tokens)
         z = self.quantize(z.contiguous())
         return z
     
@@ -86,10 +97,6 @@ class TiTok(BaseModel, PyTorchModelHubMixin, tags=["arxiv:2406.07550", "video-to
         z, result_dict = self.encode(x)
         decoded = self.decode(z)
         return decoded, result_dict
-    
-    def codes_to_quantized(self, x):
-        return self.quantize.indices_to_codes(x)
-    
 
 
 

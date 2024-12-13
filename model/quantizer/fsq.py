@@ -1,5 +1,8 @@
 """
 from: https://github.com/lucidrains/vector-quantize-pytorch
+
+Finite Scalar Quantization: VQ-VAE Made Simple - https://arxiv.org/abs/2309.15505
+Code adapted from Jax version in Appendix A.1
 """
 
 from __future__ import annotations

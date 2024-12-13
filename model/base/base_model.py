@@ -1,3 +1,11 @@
+"""This file contains some base class implementation for models.
+
+This file may have been modified by Bytedance Ltd. and/or its affiliates (“Bytedance's Modifications”).
+All Bytedance's Modifications are Copyright (year) Bytedance Ltd. and/or its affiliates. 
+
+Reference:
+    https://github.com/huggingface/open-muse/blob/main/muse/modeling_utils.py
+"""
 import os
 from typing import Union, Callable, Dict, Optional
 

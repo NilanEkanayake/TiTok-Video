@@ -13,3 +13,9 @@ scipy
 torch>=2.5.0
 torchvision
 tqdm
+accelerate
+iopath
+scikit-image
+termcolor
+torchinfo
+wandb

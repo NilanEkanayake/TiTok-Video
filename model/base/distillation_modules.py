@@ -27,14 +27,18 @@ class TiTokEncoder(nn.Module):
         super().__init__()
         self.config = config
         # 4x8x8
-        self.spatial_size = config.video_dataset.params.resolution // config.model.vae_model.spatial_compression 
-        self.temporal_size = config.video_dataset.params.num_frames // config.model.vae_model.temporal_compression 
-        self.spatial_patch_size = config.model.vq_model.vit_enc_spatial_patch_size
-        self.temporal_patch_size = config.model.vq_model.vit_enc_temporal_patch_size
+        self.spatial_size = config.video_dataset.params.resolution // config.model.pretrained_vae.spatial_compression 
+        # self.temporal_size = (config.video_dataset.params.num_frames-1) // config.model.pretrained_vae.temporal_compression
+        self.temporal_size = config.video_dataset.params.num_frames // config.model.pretrained_vae.temporal_compression 
+        self.spatial_patch_size = config.model.titok.vit_enc_spatial_patch_size
+        self.temporal_patch_size = config.model.titok.vit_enc_temporal_patch_size
         self.grid_size = ((self.spatial_size // self.spatial_patch_size) ** 2) * (self.temporal_size // self.temporal_patch_size)
-        self.num_latent_tokens = config.model.vq_model.num_latent_tokens
+        self.model_size = config.model.titok.vit_enc_model_size
+        self.num_latent_tokens = config.model.titok.num_latent_tokens
         self.token_size = token_size
-        self.model_size = config.model.vq_model.vit_enc_model_size
+
+        if config.model.titok.quant_mode == "vae":
+            self.token_size = self.token_size * 2 # for KL sampling
 
         self.width = {
                 "tiny": 256,
@@ -59,14 +63,14 @@ class TiTokEncoder(nn.Module):
         self.vae_conv_size = (self.temporal_patch_size, self.spatial_patch_size, self.spatial_patch_size)
 
         self.patch_embed = nn.Conv3d(
-            in_channels=config.model.vae_model.latent_channels, 
+            in_channels=config.model.pretrained_vae.latent_channels, 
             out_channels=self.width, 
             kernel_size=self.vae_conv_size,
             stride=self.vae_conv_size,
             # padding=(1, 0, 0),
             bias=True
         )
-
+        
         scale = self.width ** -0.5
 
         self.positional_embedding = nn.Parameter(
@@ -76,29 +80,26 @@ class TiTokEncoder(nn.Module):
         
         self.ln_pre = nn.LayerNorm(self.width)
 
-        self.width_mid = self.width
-
-        self.width_out = self.width
-
         self.model_layers = nn.ModuleList()
         
         #############################
         for i in range(self.num_layers):
-            self.model_layers.append(ResidualAttentionBlock(d_model=self.width_out, n_head=self.num_heads))
+            self.model_layers.append(ResidualAttentionBlock(d_model=self.width, n_head=self.num_heads, exp_res=config.model.titok.attn_and_mlp_residual))
         #############################
 
-        self.ln_post = nn.LayerNorm(self.width_out)
+        self.ln_post = nn.LayerNorm(self.width)
 
-        self.linear_out = nn.Linear(self.width_out, self.token_size, bias=True)
+        self.linear_out = nn.Linear(self.width, self.token_size, bias=True)
 
-    def forward(self, x, latent_tokens):
+
+    def forward(self, pixel_values, latent_tokens):
+        x = pixel_values
         x = self.patch_embed(x)
 
         x = x.reshape(x.shape[0], x.shape[1], -1)
-        x = x.permute(0, 2, 1) # shape = [*, grid, width]
+        x = x.permute(0, 2, 1)
 
         x = x + self.positional_embedding.to(x.dtype)
-        
 
         latent_tokens = _expand_token(latent_tokens, x.shape[0]).to(x.dtype)
         latent_tokens = latent_tokens + self.latent_token_positional_embedding.to(x.dtype)
@@ -122,16 +123,17 @@ class TiTokDecoder(nn.Module):
         super().__init__()
         self.config = config
 
-        self.spatial_size = config.video_dataset.params.resolution // config.model.vae_model.spatial_compression 
-        self.temporal_size = config.video_dataset.params.num_frames // config.model.vae_model.temporal_compression 
-        self.spatial_patch_size = config.model.vq_model.vit_enc_spatial_patch_size
-        self.temporal_patch_size = config.model.vq_model.vit_enc_temporal_patch_size
+        # 4x8x8
+        self.spatial_size = config.video_dataset.params.resolution // config.model.pretrained_vae.spatial_compression 
+        # self.temporal_size = (config.video_dataset.params.num_frames-1) // config.model.pretrained_vae.temporal_compression
+        self.temporal_size = config.video_dataset.params.num_frames // config.model.pretrained_vae.temporal_compression 
+        self.spatial_patch_size = config.model.titok.vit_enc_spatial_patch_size
+        self.temporal_patch_size = config.model.titok.vit_enc_temporal_patch_size
         self.grid_size = ((self.spatial_size // self.spatial_patch_size) ** 2) * (self.temporal_size // self.temporal_patch_size)
 
-        self.model_size = config.model.vq_model.vit_dec_model_size
-        self.num_latent_tokens = config.model.vq_model.num_latent_tokens
+        self.model_size = config.model.titok.vit_dec_model_size
+        self.num_latent_tokens = config.model.titok.num_latent_tokens
         self.token_size = token_size
-        self.model_size = config.model.vq_model.vit_dec_model_size
 
         self.width = {
                 "tiny": 256,
@@ -165,28 +167,24 @@ class TiTokDecoder(nn.Module):
         
         self.ln_pre = nn.LayerNorm(self.width)
 
-        self.width_mid = self.width
-        self.width_out = self.width
-
         self.model_layers = nn.ModuleList()
         
         #############################
         for i in range(self.num_layers):
-            self.model_layers.append(ResidualAttentionBlock(d_model=self.width_out, n_head=self.num_heads))
+            self.model_layers.append(ResidualAttentionBlock(d_model=self.width, n_head=self.num_heads, exp_res=config.model.titok.attn_and_mlp_residual))
         #############################
 
-        self.ln_post = nn.LayerNorm(self.width_out)
+        self.ln_post = nn.LayerNorm(self.width)
 
         self.vae_conv_size = (self.temporal_patch_size, self.spatial_patch_size, self.spatial_patch_size)
         self.conv_out = nn.ConvTranspose3d(
-            in_channels=self.width_out, 
-            out_channels=config.model.vae_model.latent_channels, 
+            in_channels=self.width, 
+            out_channels=config.model.pretrained_vae.latent_channels, 
             kernel_size=self.vae_conv_size, 
             stride=self.vae_conv_size, 
             # output_padding=(1, 0, 0), 
             bias=True
         )
-        
         
     def forward(self, z_quantized):
         N, W, C = z_quantized.shape
@@ -212,15 +210,13 @@ class TiTokDecoder(nn.Module):
 
         x = self.ln_post(x)
         
-        # N L D -> N D H W
         x = x.permute(0, 2, 1).reshape(
             batchsize,
-            self.width_out,
+            self.width,
             self.temporal_size // self.temporal_patch_size,
-            self.spatial_size // self.spatial_patch_size, 
+            self.spatial_size // self.spatial_patch_size,
             self.spatial_size // self.spatial_patch_size
         )
 
         x = self.conv_out(x.contiguous())
-        
         return x
