@@ -33,7 +33,7 @@ to
 ```
 video = torch.load(video_path, weights_only=False)[:, :-1, :, :] # CTHW -> C(T-1)HW
 ```
-In dataset/encoded.py, or upcomment lines 31, 70, 128 and 185 in model/base/distillation_modules.py as well as change the frame count to 17 in the config. However, the model may/will not train properly with 17 frames, so consider it an experiment.
+In dataset/encoded.py, or upcomment lines 31, 70, 128 and 185 in model/base/distillation_modules.py as well as change the frame count to 17 in the config. However, currently the model may/will not train properly with 17 frames, so consider it an experiment.
 
 My code to pre-process the dataset isn't clean enough to publish yet, but it shouldn't be too hard to replicate.
 ## Uses code from:
