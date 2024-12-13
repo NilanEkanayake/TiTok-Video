@@ -18,7 +18,7 @@ experiment:
 model:
     pretrained_vae:
         type: cogvideox # wfvae, cogvideox
-        path: cogvideo_vae # point to a folder containing the vae's files from HF.
+        path: base_tokenizer/pretrained_model # point to a folder containing the vae's files from HF.
         latent_channels: 16
         temporal_compression: 4
         spatial_compression: 8
@@ -67,8 +67,8 @@ model:
 
 video_dataset:
     params:
-        train_dataset: "train_dataset/*.pt" # the dataset should be a directory of files containing saved float32 tensors, each one being a VAE-encoded clip of the target resolution and frame count.
-        eval_dataset: "eval_dataset/*.pt"
+        train_dataset: "train_dataset/*.pth" # the dataset should be a directory of files containing saved float32 tensors, each one being a VAE-encoded clip of the target resolution and frame count.
+        eval_dataset: "eval_dataset/*.pth"
         num_frames: 16
         resolution: 192
         frames_per_second: 8
