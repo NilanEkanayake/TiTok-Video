@@ -41,6 +41,10 @@ def log_codebook_usage(model, config, dataloader, accelerator, global_step):
     accelerator.log(codebook_dict, step=global_step+1)
 
     model.train()
+    
+    ###
+    gc.collect()
+    ###
 
 
 def metric_scores(model, config, dataloader, pretrained_vae, accelerator, global_step):
@@ -80,6 +84,11 @@ def metric_scores(model, config, dataloader, pretrained_vae, accelerator, global
     result_dict = {'eval/psnr': np.average(np.array(psnr_scores)), 'eval/ssim': np.average(np.array(ssim_scores))} 
     accelerator.log(result_dict, step=global_step+1)
 
+    ###
+    del vae_gpu
+    gc.collect()
+    ###
+
 
 def reconstruct_videos(model, config, dataloader, pretrained_vae, accelerator, global_step):
     model.eval()
@@ -110,3 +119,8 @@ def reconstruct_videos(model, config, dataloader, pretrained_vae, accelerator, g
                 break
 
     model.train()
+    
+    ###
+    del vae_gpu
+    gc.collect()
+    ###
