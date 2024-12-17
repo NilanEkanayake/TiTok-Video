@@ -89,7 +89,7 @@ def train_one_epoch(config, logger, accelerator,
         if (global_step + 1) % config.experiment.generate_every == 0 and accelerator.is_main_process:
             logger.info("Reconstructing videos...")
             reconstruct_videos(model, config, recon_dataloader, pretrained_vae, accelerator, global_step)
-            accelerator.free_memory()
+            # accelerator.free_memory()
             accelerator.wait_for_everyone()
 
         # Evaluation.
@@ -100,7 +100,7 @@ def train_one_epoch(config, logger, accelerator,
             if not config.model.titok.quant_mode == "vae": # vq mode
                 log_codebook_usage(model, config, codebook_dataloader, accelerator, global_step)
 
-            accelerator.free_memory()
+            # accelerator.free_memory()
             accelerator.wait_for_everyone()
 
         global_step += 1
