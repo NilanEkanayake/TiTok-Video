@@ -34,7 +34,7 @@ from utils.utils import (
 )
 
 from accelerate import Accelerator
-from accelerate.utils import set_seed
+from accelerate.utils import set_seed, ProjectConfiguration
 
 
 def main():
@@ -53,7 +53,7 @@ def main():
 
     logger = setup_logger(name="TiTok", log_level="INFO", output_file=f"{output_dir}/log.txt")
 
-    accelerator = Accelerator(log_with='wandb', mixed_precision=config.training.mixed_precision, project_dir=os.getcwd(), device_placement=True)
+    accelerator = Accelerator(log_with='wandb', mixed_precision=config.training.mixed_precision, project_dir=os.getcwd(), device_placement=True, project_config=ProjectConfiguration())
 
 
     accelerator.init_trackers(
