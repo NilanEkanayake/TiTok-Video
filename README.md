@@ -11,8 +11,8 @@ The model was trained for a few hours on a single 4090, with ~80k clips from mir
 ```
 python3 -m pip install -r requirements.txt
 mkdir -p base_tokenizer/pretrained_model/
-wget https://huggingface.co/chestnutlzj/WF-VAE-L-16Chn/resolve/main/diffusion_pytorch_model.safetensors -P base_tokenizer/pretrained_model/
-wget https://huggingface.co/chestnutlzj/WF-VAE-L-16Chn/resolve/main/config.json -P base_tokenizer/pretrained_model/
+wget https://huggingface.co/chestnutlzj/WF-VAE-L-16Chn/resolve/main/diffusion_pytorch_model.safetensors -P base_tokenizers/pretrained_model/
+wget https://huggingface.co/chestnutlzj/WF-VAE-L-16Chn/resolve/main/config.json -P base_tokenizers/pretrained_model/
 wget https://huggingface.co/NilanE/TiTok-Video-64tokens-8Kcodes-exp/resolve/main/model.pt
 ```
 
