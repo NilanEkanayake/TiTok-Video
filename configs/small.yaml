@@ -1,7 +1,7 @@
 model:
     pretrained_vae:
         type: wfvae
-        path: base_tokenizer/pretrained_model # point to a folder containing the vae's files from HF.
+        path: base_tokenizers/pretrained_model # point to a folder containing the vae's files from HF.
         latent_channels: 16
         temporal_compression: 4
         spatial_compression: 8
