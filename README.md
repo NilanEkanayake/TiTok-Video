@@ -10,7 +10,8 @@ Tweak the config file as desired, then:
 ```
 PYTHONPATH=./ python3 preprocess_dataset/process.py
 ```
-A couple WDS-format datasets are linked below, minor code tweaks might be required for some of them:
+A couple WDS-format datasets are linked below, minor code tweaks might be required for some of them.
+A pre-processed dataset made using vidtok_kl_causal_488_16chn.ckpt and the linked datasets can be found here: https://huggingface.co/datasets/NilanE/vidtok_256_33. Note that the tensors were saved in float32, so a cast might be necessary in the dataset code.
 
 #### Training:
 ```
