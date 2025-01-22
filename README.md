@@ -1,6 +1,4 @@
 # TiTok for Video Tokenization
-
-## Training:
 #### Setup:
 ```
 python3 -m pip install -r requirements.txt
