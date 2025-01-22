@@ -2,9 +2,6 @@ import torch
 import torch.nn as nn
 from collections import OrderedDict
 
-def _expand_token(token, batch_size: int):
-    return token.unsqueeze(0).expand(batch_size, -1, -1)
-
 class ResidualAttentionBlock(nn.Module):
     def __init__(
             self,
@@ -53,7 +50,7 @@ class ResidualAttentionBlock(nn.Module):
         if self.mlp_ratio > 0:
             x = x + self.mlp(self.ln_2(x))
 
-        if self.exp_res: # have residual be added after both MLP and attention, rather than just attention
+        if self.exp_res:
             x = x + residual
         x = x.permute(1, 0, 2) # LND -> NLD
 

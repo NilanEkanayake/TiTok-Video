@@ -1,109 +1,96 @@
-experiment:
-    project: "titok_video_tiny"
-    name: "FSQ-TP4_SP8-TS12_TL16-192x16"
-    output_dir: "out_tiny"
+logging:
+    project: titok_video_speedy_FSQexp_2
+    run_name: FSQ-TL16-tiny-PL-speedTest
 
-    max_train_steps: 50000
-    max_train_examples: 480000
+    logging_interval: 50
 
-    save_every: 2000
-    eval_every: 500
-    generate_every: 500
-    log_every: 50
-    log_grad_norm_every: 500
+    save_path: out_tiny
+    save_step_interval: 1000
+    keep_prior_checkpoints: -1 # -1 to keep all
 
-    resume: False
-    init_weight: ""
+    resume_from_checkpoint:
+    init_from_checkpoint:
 
 model:
-    pretrained_vae:
-        type: cogvideox # wfvae, cogvideox
-        path: base_tokenizer/pretrained_model # point to a folder containing the vae's files from HF.
-        latent_channels: 16
-        temporal_compression: 4
-        spatial_compression: 8
-        vae_dtype: "bf16" # wfvae-16ch has minor quality hit at bf16
-
     titok:
-        vit_enc_temporal_patch_size: 4
-        vit_enc_spatial_patch_size: 8
+        temporal_patch_size: 4
+        spatial_patch_size: 8
 
+        fsq_levels: [7, 5, 5, 5, 5]
         num_latent_tokens: 16
 
-        # mode setting
-        quant_mode: "fsq" # vae, fsq, bsq
+        encoder_size: tiny
+        decoder_size: tiny
+        exp_residual: False
 
-        # FSQ
-        fsq_levels: [8, 8, 5, 5, 5] # CB size: 8000
+    vae:
+        type: wfvae # cogvideox, vidtok, wfvae
+        path: /mnt/e/VIDEODATA/wf/vae
+        latent_channels: 8
+        temporal_compression: 4
+        spatial_compression: 8
 
-        # # VAE:
-        # token_size: 12
-        # kl_weight: 1e-5
+    disc: # experimental
+        use_disc: False
 
-        # # BSQ - refer to https://github.com/zhaoyue-zephyrus/bsq-vit:
-        # token_size: 12 # CB size: 4096
-        # soft_entropy: True
-        # l2_norm: True
-        # post_q_l2_norm: True
+        model_layers: 1
+        model_heads: 1
+        model_dim: 128
 
-        # commit_loss_weight: 0.
+        temporal_patch_size: 4
+        spatial_patch_size: 4
 
-        # persample_entropy_weight: 1.0
-        # cb_entropy_weight: 1.0
-        # ent_loss_weight: 0.1
-        # embed_group_size: 6
-        # persample_entropy_compute: analytical
-        # cb_entropy_compute: group
+        disc_start: 45000
+        disc_factor: 1.0
+        disc_weight: 0.1
+        lecam_weight: 0.0 # disabled
 
-        # codebook_rampup_steps: 2000 # 0 to disable ramp
-        # codebook_rampup_multiplier: 3.0
+        base_gamma: 1  # higher gamma smooths more earlier in training.
+        final_gamma: 0.1
 
-        # vit arch
-        vit_enc_model_size: "tiny"
-        vit_dec_model_size: "tiny"
-
-        attn_and_mlp_residual: False # has slightly better performance when enabled, but diverges from the literature. Not sure if it's stable for long training runs.
-
-
-video_dataset:
-    params:
-        train_dataset: "train_dataset/*.pth" # the dataset should be a directory of files containing saved float32 tensors, each one being a VAE-encoded clip of the target resolution and frame count.
-        eval_dataset: "eval_dataset/*.pth"
-        num_frames: 16
-        resolution: 192
-        frames_per_second: 8
-        dataset_workers: 4
-
+dataset:
+    train_dataset: "preprocess_dataset/out_enc/*.pt"
+    eval_dataset: "preprocess_dataset/out_enc_eval/*.pt"
+    resolution: 192
+    num_frames: 17
+    frames_per_second: 8
+    workers: 4
 
 optimizer:
-    name: adamw
-    params:
+    titok:
         learning_rate: 1e-4
         beta1: 0.9
         beta2: 0.99
         weight_decay: 1e-4
-        epsilon: 1e-8
+        warmup_steps: 1000
+        end_lr: 1e-5
 
-lr_scheduler:
-    scheduler: "cosine"
-    params:
-        learning_rate: ${optimizer.params.learning_rate}
-        warmup_steps: 200
+    disc:
+        learning_rate: 1e-4
+        beta1: 0.9
+        beta2: 0.99
+        weight_decay: 1e-4
+        warmup_steps: 1000
         end_lr: 1e-5
 
 training:
-    torch_compile: False
-    torch_compile_mode: "reduce-overhead"
-    torch_compile_backend: "inductor"
-    per_gpu_batch_size: 512
-    mixed_precision: "bf16"
-    enable_tf32: True
-    enable_wandb: True
+    torch_compile: True
     seed: 42
-    max_grad_norm: 1.0
+    max_grad_norm: # 1.0
+    
+    batch_size: 512
 
-    # for metrics and recon
-    recon_batch_size: 1
-    num_generated_videos: 4
-    metric_eval_num: 32
-    codebook_eval_batch_size: 64
+    enable_tf32: True
+    precision: bf16-mixed
+    train_devices: 1
+    accelerator: 'gpu'
+
+    max_steps: 50000
+    val_step_interval: 1000
+
+    eval_recon_log_num: 4 # should be less than eval_sample_size
+    eval_sample_size: 32
+    eval_batch_size: 1
+    eval_clear_cache: True
+
+    log_codebook: True

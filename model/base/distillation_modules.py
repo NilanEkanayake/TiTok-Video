@@ -20,25 +20,30 @@ Reference:
 """
 import torch
 import torch.nn as nn
-from model.base.transformer_block import ResidualAttentionBlock, _expand_token
+from model.base.transformer_block import ResidualAttentionBlock
+from einops.layers.torch import Rearrange
+
+def _expand_token(token, batch_size: int):
+    return token.unsqueeze(0).expand(batch_size, -1, -1)
     
 class TiTokEncoder(nn.Module):
-    def __init__(self, config, token_size):
+    def __init__(self, model_config, vae_config, dataset_config, token_size):
         super().__init__()
-        self.config = config
-        # 4x8x8
-        self.spatial_size = config.video_dataset.params.resolution // config.model.pretrained_vae.spatial_compression 
-        # self.temporal_size = (config.video_dataset.params.num_frames-1) // config.model.pretrained_vae.temporal_compression
-        self.temporal_size = config.video_dataset.params.num_frames // config.model.pretrained_vae.temporal_compression 
-        self.spatial_patch_size = config.model.titok.vit_enc_spatial_patch_size
-        self.temporal_patch_size = config.model.titok.vit_enc_temporal_patch_size
-        self.grid_size = ((self.spatial_size // self.spatial_patch_size) ** 2) * (self.temporal_size // self.temporal_patch_size)
-        self.model_size = config.model.titok.vit_enc_model_size
-        self.num_latent_tokens = config.model.titok.num_latent_tokens
-        self.token_size = token_size
+        self.model_config = model_config
+        self.vae_config = vae_config
+        self.dataset_config = dataset_config
 
-        if config.model.titok.quant_mode == "vae":
-            self.token_size = self.token_size * 2 # for KL sampling
+        self.spatial_size = dataset_config.resolution // vae_config.spatial_compression 
+        self.temporal_size = dataset_config.num_frames // vae_config.temporal_compression
+        self.spatial_patch_size = model_config.spatial_patch_size
+        self.temporal_patch_size = model_config.temporal_patch_size
+        assert self.spatial_size % self.spatial_patch_size == 0 and self.temporal_size % self.temporal_patch_size == 0, "input dimensions should be evenly divisible by respective patch sizes"
+        self.grid_size = ((self.spatial_size // self.spatial_patch_size) ** 2) * (self.temporal_size // self.temporal_patch_size)
+        self.model_size = model_config.encoder_size
+        self.num_latent_tokens = model_config.num_latent_tokens
+        self.token_size = token_size
+        self.vae_channels = vae_config.latent_channels
+
 
         self.width = {
                 "tiny": 256,
@@ -59,24 +64,22 @@ class TiTokEncoder(nn.Module):
                 "large": 16,
             }[self.model_size]
         
-        
-        self.vae_conv_size = (self.temporal_patch_size, self.spatial_patch_size, self.spatial_patch_size)
 
-        self.patch_embed = nn.Conv3d(
-            in_channels=config.model.pretrained_vae.latent_channels, 
-            out_channels=self.width, 
-            kernel_size=self.vae_conv_size,
-            stride=self.vae_conv_size,
-            # padding=(1, 0, 0),
-            bias=True
+        channel_depth = self.vae_channels * self.temporal_patch_size * self.spatial_patch_size ** 2
+
+        self.patch_embed = nn.Sequential(
+            nn.Conv3d(self.vae_channels, self.vae_channels, kernel_size=(2, 3, 3), padding=(0, 1, 1), bias=True),
+            Rearrange('b c (t p1) (h p2) (w p3) -> b (p1 p2 p3 c) t h w',
+                p1 = self.temporal_patch_size, p2 = self.spatial_patch_size, p3 = self.spatial_patch_size),
+            nn.Conv3d(in_channels=channel_depth, out_channels=self.width, kernel_size=1, padding=0, bias=True),
         )
         
         scale = self.width ** -0.5
 
-        self.positional_embedding = nn.Parameter(
-                scale * torch.randn(self.grid_size, self.width))
-        self.latent_token_positional_embedding = nn.Parameter(
-            scale * torch.randn(self.num_latent_tokens, self.width))
+        self.latent_tokens = nn.Parameter(scale * torch.randn(self.num_latent_tokens, self.width))
+
+        self.positional_embedding = nn.Parameter(scale * torch.randn(self.grid_size, self.width))
+        self.latent_token_positional_embedding = nn.Parameter(scale * torch.randn(self.num_latent_tokens, self.width))
         
         self.ln_pre = nn.LayerNorm(self.width)
 
@@ -84,7 +87,7 @@ class TiTokEncoder(nn.Module):
         
         #############################
         for i in range(self.num_layers):
-            self.model_layers.append(ResidualAttentionBlock(d_model=self.width, n_head=self.num_heads, exp_res=config.model.titok.attn_and_mlp_residual))
+            self.model_layers.append(ResidualAttentionBlock(d_model=self.width, n_head=self.num_heads, exp_res=model_config.exp_residual))
         #############################
 
         self.ln_post = nn.LayerNorm(self.width)
@@ -92,7 +95,7 @@ class TiTokEncoder(nn.Module):
         self.linear_out = nn.Linear(self.width, self.token_size, bias=True)
 
 
-    def forward(self, pixel_values, latent_tokens):
+    def forward(self, pixel_values):
         x = pixel_values
         x = self.patch_embed(x)
 
@@ -101,7 +104,7 @@ class TiTokEncoder(nn.Module):
 
         x = x + self.positional_embedding.to(x.dtype)
 
-        latent_tokens = _expand_token(latent_tokens, x.shape[0]).to(x.dtype)
+        latent_tokens = _expand_token(self.latent_tokens, x.shape[0]).to(x.dtype)
         latent_tokens = latent_tokens + self.latent_token_positional_embedding.to(x.dtype)
         x = torch.cat([x, latent_tokens], dim=1)
 
@@ -119,20 +122,22 @@ class TiTokEncoder(nn.Module):
     
 
 class TiTokDecoder(nn.Module):
-    def __init__(self, config, token_size):
+    def __init__(self, model_config, vae_config, dataset_config, token_size):
         super().__init__()
-        self.config = config
+        self.model_config = model_config
+        self.vae_config = vae_config
+        self.dataset_config = dataset_config
 
         # 4x8x8
-        self.spatial_size = config.video_dataset.params.resolution // config.model.pretrained_vae.spatial_compression 
-        # self.temporal_size = (config.video_dataset.params.num_frames-1) // config.model.pretrained_vae.temporal_compression
-        self.temporal_size = config.video_dataset.params.num_frames // config.model.pretrained_vae.temporal_compression 
-        self.spatial_patch_size = config.model.titok.vit_enc_spatial_patch_size
-        self.temporal_patch_size = config.model.titok.vit_enc_temporal_patch_size
+        self.spatial_size = dataset_config.resolution // vae_config.spatial_compression 
+        self.temporal_size = dataset_config.num_frames // vae_config.temporal_compression 
+        self.spatial_patch_size = model_config.spatial_patch_size
+        self.temporal_patch_size = model_config.temporal_patch_size
         self.grid_size = ((self.spatial_size // self.spatial_patch_size) ** 2) * (self.temporal_size // self.temporal_patch_size)
 
-        self.model_size = config.model.titok.vit_dec_model_size
-        self.num_latent_tokens = config.model.titok.num_latent_tokens
+        self.vae_channels = vae_config.latent_channels
+        self.model_size = model_config.decoder_size
+        self.num_latent_tokens = model_config.num_latent_tokens
         self.token_size = token_size
 
         self.width = {
@@ -168,22 +173,21 @@ class TiTokDecoder(nn.Module):
         self.ln_pre = nn.LayerNorm(self.width)
 
         self.model_layers = nn.ModuleList()
-        
+
         #############################
         for i in range(self.num_layers):
-            self.model_layers.append(ResidualAttentionBlock(d_model=self.width, n_head=self.num_heads, exp_res=config.model.titok.attn_and_mlp_residual))
+            self.model_layers.append(ResidualAttentionBlock(d_model=self.width, n_head=self.num_heads, exp_res=model_config.exp_residual))
         #############################
 
         self.ln_post = nn.LayerNorm(self.width)
 
-        self.vae_conv_size = (self.temporal_patch_size, self.spatial_patch_size, self.spatial_patch_size)
-        self.conv_out = nn.ConvTranspose3d(
-            in_channels=self.width, 
-            out_channels=config.model.pretrained_vae.latent_channels, 
-            kernel_size=self.vae_conv_size, 
-            stride=self.vae_conv_size, 
-            # output_padding=(1, 0, 0), 
-            bias=True
+        channel_depth = self.vae_channels * self.temporal_patch_size * self.spatial_patch_size ** 2
+
+        self.conv_out = nn.Sequential(
+            nn.Conv3d(in_channels=self.width, out_channels=channel_depth, kernel_size=1, padding=0, bias=True),
+            Rearrange('b (p1 p2 p3 c) t h w -> b c (t p1) (h p2) (w p3)',
+                p1 = self.temporal_patch_size, p2 = self.spatial_patch_size, p3 = self.spatial_patch_size),
+            nn.Conv3d(self.vae_channels, self.vae_channels, kernel_size=(2, 3, 3), padding=(1, 1, 1), bias=True), # 333, 111 for even temporal size
         )
         
     def forward(self, z_quantized):

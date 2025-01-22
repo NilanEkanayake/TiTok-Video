@@ -23,7 +23,7 @@ class DiagonalGaussianDistribution(object):
             if other is None:
                 return 0.5 * torch.sum(torch.pow(self.mean, 2)
                                        + self.var - 1.0 - self.logvar,
-                                       dim=list(self.mean.shape)[1:])
+                                       dim=list(range(self.mean.ndim))[1:])
             else:
                 return 0.5 * torch.sum(
                     torch.pow(self.mean - other.mean, 2) / other.var

@@ -104,8 +104,8 @@ class LPIPSWithDiscriminator3D(nn.Module):
         nll_grads = torch.autograd.grad(nll_loss, layer, retain_graph=True)[0]
         g_grads = torch.autograd.grad(g_loss, layer, retain_graph=True)[0]
 
-        d_weight = torch.norm(nll_grads) / (torch.norm(g_grads) + 1e-4)
-        d_weight = torch.clamp(d_weight, 0.0, 1e4).detach()
+        d_weight = torch.norm(nll_grads) / (torch.norm(g_grads) + 1e-6)
+        d_weight = torch.clamp(d_weight, 0.0, 1e6).detach()
         d_weight = d_weight * self.discriminator_weight
         return d_weight
 
