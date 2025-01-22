@@ -20,7 +20,7 @@ PYTHONPATH=./ python3 titok_pl.py config=configs/tiny.yaml
 
 #### Supported VAEs:
 ```
-https://huggingface.co/microsoft/VidTok (can use any of the non-quantized models)
+https://huggingface.co/microsoft/VidTok (can use any of the causal non-quantized models)
 https://huggingface.co/chestnutlzj/WF-VAE-L-16Chn
 https://huggingface.co/LanguageBind/Open-Sora-Plan-v1.3.0 (8-ch WF-VAE)
 https://huggingface.co/THUDM/CogVideoX-2b
