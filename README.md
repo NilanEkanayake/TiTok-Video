@@ -70,7 +70,7 @@ https://huggingface.co/datasets/TIGER-Lab/VISTA-400K
 https://huggingface.co/datasets/LanguageBind/Open-Sora-Plan-v1.1.0
 ```
 
-##### Uses code from:
+#### Uses code from:
 ```
 https://github.com/bytedance/1d-tokenizer
 https://github.com/ShivamDuggal4/adaptive-length-tokenizer
