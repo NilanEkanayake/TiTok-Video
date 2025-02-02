@@ -10,10 +10,10 @@
 </p>
 
 ### Models:
-| Stage | Resolution and FPS | Losses | VAE | Model |
-| ------------- | ------------- | ------------- | ------------- | ------------- |
-| 1 | 128x128p, 17 frames | Per-frame MSE | [checkpoint](https://huggingface.co/chestnutlzj/WF-VAE-L-16Chn) | [checkpoint](https://huggingface.co/NilanE/Titok-Video-Stage1)|
-| 2 | 256x256p, 33 frames | Per-frame MSE | [checkpoint](https://huggingface.co/chestnutlzj/WF-VAE-L-16Chn) | [checkpoint](https://huggingface.co/NilanE/Titok-Video-Stage2)|
+| Stage | Resolution and FPS | Latent tokens | Codebook Size | Losses | VAE | Model |
+| ------------- | ------------- | ------------- | ------------- | ------------- | ------------- | ------------- |
+| 1 | 128x128p, 17 frames | 64 | Per-frame MSE | 15360 | [checkpoint](https://huggingface.co/chestnutlzj/WF-VAE-L-16Chn) | [checkpoint](https://huggingface.co/NilanE/Titok-Video-Stage1)|
+| 2 | 256x256p, 33 frames | 128 | Per-frame MSE | 15360 | [checkpoint](https://huggingface.co/chestnutlzj/WF-VAE-L-16Chn) | [checkpoint](https://huggingface.co/NilanE/Titok-Video-Stage2)|
 
 ### TODO List:
   - [x] First-stage low-res 128x13 training with MSE loss
