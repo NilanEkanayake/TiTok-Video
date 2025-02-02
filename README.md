@@ -12,8 +12,8 @@
 ### Models:
 | Stage | Resolution and FPS | Latent tokens | Codebook Size | Losses | VAE | Model |
 | ------------- | ------------- | ------------- | ------------- | ------------- | ------------- | ------------- |
-| 1 | 128x128p, 17 frames | 64 | Per-frame MSE | 15360 | [checkpoint](https://huggingface.co/chestnutlzj/WF-VAE-L-16Chn) | [checkpoint](https://huggingface.co/NilanE/Titok-Video-Stage1)|
-| 2 | 256x256p, 33 frames | 128 | Per-frame MSE | 15360 | [checkpoint](https://huggingface.co/chestnutlzj/WF-VAE-L-16Chn) | [checkpoint](https://huggingface.co/NilanE/Titok-Video-Stage2)|
+| 1 | 128x128p, 17 frames | 64 | 15360 | Per-frame MSE | [checkpoint](https://huggingface.co/chestnutlzj/WF-VAE-L-16Chn) | [checkpoint](https://huggingface.co/NilanE/Titok-Video-Stage1)|
+| 2 | 256x256p, 33 frames | 128 | 15360 | Per-frame MSE | [checkpoint](https://huggingface.co/chestnutlzj/WF-VAE-L-16Chn) | [checkpoint](https://huggingface.co/NilanE/Titok-Video-Stage2)|
 
 ### TODO List:
   - [x] First-stage low-res 128x13 training with MSE loss
@@ -40,13 +40,10 @@ Tweak the config file as desired, then:
 ```
 PYTHONPATH=./ python3 preprocess_dataset/process.py
 ```
-A couple WDS-format datasets are linked below, minor code tweaks might be required for some of them.
+**Notes:**
+* A couple WDS-format datasets are linked below, minor code tweaks might be required for some of them.
+* A pre-processed dataset made using [vidtok_kl_causal_488_16chn](https://huggingface.co/microsoft/VidTok/blob/main/checkpoints/vidtok_kl_causal_488_16chn.ckpt) can be found [here](https://huggingface.co/datasets/NilanE/vidtok_256_33). *The processed tensors were saved in float32, so a cast might be necessary in the dataset code.*
 
-A pre-processed dataset made using ```https://huggingface.co/microsoft/VidTok/blob/main/checkpoints/vidtok_kl_causal_488_16chn.ckpt``` and the linked datasets can be found here: 
-```https://huggingface.co/datasets/NilanE/vidtok_256_33```.
-Note that the tensors were saved in float32, so a cast might be necessary in the dataset code.
-```https://huggingface.co/datasets/NilanE/vidtok_256_33```. 
-Note that the tensors were saved in float32, so a cast might be necessary in the dataset code.
 
 #### Launch:
 ```
