@@ -86,13 +86,15 @@ class EncodedDataset(IterableDataset):
     def __getitem__(self, idx):
         video_path = self.samples[idx]
         try:
-            video = torch.load(video_path, weights_only=True)  # BCTHW
+            video = torch.load(video_path, weights_only=True)
+            if video.dim() == 4:
+                return dict(video=video) # cthw already
             if self.remove_last_frame:
                 video = video[:, :, :-1, :, :]  # BCTHW -> BC(T-1)HW
 
             # Return a random sample from the batch dimension.
             b = random.randint(0, video.shape[0] - 1)
-            return dict(video=video[b])  # CTHW
+            return dict(video=video[b]) # CTHW
 
         except Exception as e:
             print(f'Error with {e}, {video_path}')

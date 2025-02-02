@@ -5,8 +5,10 @@ einops
 gdown
 huggingface_hub
 imageio
+jupyterlab
 lightning
 matplotlib
+moviepy==1.0.3
 numpy
 omegaconf
 opencv_python
@@ -15,12 +17,11 @@ packaging
 pandas
 Pillow
 PyYAML
-PyYAML
 Requests
 rich
 safetensors
 scipy
-torch>=2.5.0
+torch>=2.4.0
 torchvision
 tqdm
 wandb

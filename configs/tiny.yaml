@@ -1,6 +1,6 @@
 logging:
-    project: titok_video_speedy_FSQexp_2
-    run_name: FSQ-TL16-tiny-PL-speedTest
+    project: titok_video
+    run_name: FSQ-TL16-tiny
 
     logging_interval: 50
 
@@ -24,9 +24,9 @@ model:
         exp_residual: False
 
     vae:
-        type: wfvae # cogvideox, vidtok, wfvae
-        path: /mnt/e/VIDEODATA/wf/vae
-        latent_channels: 8
+        type: wfvae # cogvideox, vidtok, wfvae (vidtok VAEs have convergence failure?)
+        path: path_to_vae_ckpt # folder containing cpkt and config for wfvae and cogvideo, direct path to ckpt for vidtok
+        latent_channels: 16
         temporal_compression: 4
         spatial_compression: 8
 
@@ -54,7 +54,7 @@ dataset:
     resolution: 192
     num_frames: 17
     frames_per_second: 8
-    workers: 4
+    workers: 6
 
 optimizer:
     titok:
@@ -76,7 +76,7 @@ optimizer:
 training:
     torch_compile: True
     seed: 42
-    max_grad_norm: # 1.0
+    max_grad_norm: 1.0
     
     batch_size: 512
 
@@ -88,7 +88,7 @@ training:
     max_steps: 50000
     val_step_interval: 1000
 
-    eval_recon_log_num: 4 # should be less than eval_sample_size
+    eval_recon_log_num: 4
     eval_sample_size: 32
     eval_batch_size: 1
     eval_clear_cache: True
