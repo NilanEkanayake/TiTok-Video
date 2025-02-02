@@ -1,5 +1,5 @@
 # TiTok for Video Tokenization
-### Reconstructions (MSE-loss only, hence the blur):
+### Reconstructions (MSE-loss only, causes blur):
 <p>
 <img src="assets/recon_1.gif" alt="teaser" width=49%>
 <img src="assets/recon_2.gif" alt="teaser" width=49%>
