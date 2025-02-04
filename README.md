@@ -12,8 +12,18 @@
 ### Models:
 | Stage | Resolution and FPS | Latent tokens | Codebook Size | Losses | VAE | Model |
 | ------------- | ------------- | ------------- | ------------- | ------------- | ------------- | ------------- |
-| 1 | 128x128p, 17 frames | 64 | 15360 | MSE | [checkpoint](https://huggingface.co/chestnutlzj/WF-VAE-L-16Chn) | [checkpoint](https://huggingface.co/NilanE/Titok-Video-Stage1)|
-| 2 | 256x256p, 33 frames | 128 | 15360 | MSE | [checkpoint](https://huggingface.co/chestnutlzj/WF-VAE-L-16Chn) | [checkpoint](https://huggingface.co/NilanE/Titok-Video-Stage2)|
+| 1 | 128x128p, 17 frames | 64 | 15360 | MSE | [checkpoint](https://huggingface.co/chestnutlzj/WF-VAE-L-16Chn) | [checkpoint](https://huggingface.co/NilanE/Titok-Video-Stage1) |
+| 2 | 256x256p, 33 frames | 128 | 15360 | MSE | [checkpoint](https://huggingface.co/chestnutlzj/WF-VAE-L-16Chn) | [checkpoint](https://huggingface.co/NilanE/Titok-Video-Stage2) |
+
+### Model eval:
+| Model | Eval Res. | SSIM | PSNR | LPIPS |
+| ------------- | ------------- | ------------- | ------------- | ------------- |
+| WF-VAE 16ch | 128x17 | 0.90 | 26.74 | 0.14 |
+| Titok-Video Stage 1 | 128x17 | 0.50 | 19.00 | 0.63 |
+| WF-VAE 16ch | 256x33 | 0.91 | 28.09 | 0.16 |
+| Titok-Video Stage 2 | 256x33 | 0.54 | 18.59 | 0.62 |
+
+*The models were evaluated on the [MCL_JCV](https://mcl.usc.edu/mcl-jcv-dataset/) dataset. See [eval.ipynb](eval.ipynb) for details.*
 
 ### TODO List:
   - [x] First-stage low-res 128x13 training with MSE loss
