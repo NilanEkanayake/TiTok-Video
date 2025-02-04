@@ -2,6 +2,7 @@ beartype
 decord
 diffusers==0.31.0
 einops
+ffmpeg-python
 gdown
 huggingface_hub
 imageio
