@@ -23,7 +23,8 @@
 | WF-VAE 16ch | 256x33 | 0.91 | 28.09 | 0.16 |
 | Titok-Video Stage 2 | 256x33 | 0.54 | 18.59 | 0.62 |
 
-*The models were evaluated on the [MCL_JCV](https://mcl.usc.edu/mcl-jcv-dataset/) dataset. See [eval.ipynb](eval.ipynb) for details.*
+*The models were evaluated on the [MCL_JCV](https://mcl.usc.edu/mcl-jcv-dataset/) dataset. See [eval.ipynb](eval.ipynb) for details.
+The TiTok-Video model operates in the latent space of a pre-trained VAE, and therefore the upper bound of its performance is dependant on the VAE used*
 
 ### TODO List:
   - [x] First-stage low-res 128x13 training with MSE loss
