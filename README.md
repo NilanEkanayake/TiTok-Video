@@ -10,7 +10,7 @@
 </p>
 
 ### Models:
-| Stage | Resolution and FPS | Latent tokens | Codebook Size | Losses | VAE | Model |
+| Stage | Resolution and Frames | Latent tokens | Codebook Size | Losses | VAE | Model |
 | ------------- | ------------- | ------------- | ------------- | ------------- | ------------- | ------------- |
 | 1 | 128x128p, 17 frames | 64 | 15360 | MSE | [checkpoint](https://huggingface.co/chestnutlzj/WF-VAE-L-16Chn) | [checkpoint](https://huggingface.co/NilanE/Titok-Video-Stage1) |
 | 2 | 256x256p, 33 frames | 128 | 15360 | MSE | [checkpoint](https://huggingface.co/chestnutlzj/WF-VAE-L-16Chn) | [checkpoint](https://huggingface.co/NilanE/Titok-Video-Stage2) |
@@ -23,7 +23,7 @@
 | WF-VAE 16ch | 256x33 | 0.91 | 28.09 | 0.16 |
 | Titok-Video Stage 2 | 256x33 | 0.54 | 18.59 | 0.62 |
 
-*The models were evaluated on the [MCL_JCV](https://mcl.usc.edu/mcl-jcv-dataset/) dataset. See [eval.ipynb](eval.ipynb) for details.
+*The models were evaluated on the [MCL_JCV](https://mcl.usc.edu/mcl-jcv-dataset/) dataset with the videos resampled to 8fps. See [eval.ipynb](eval.ipynb) for details.
 The TiTok-Video model operates in the latent space of a pre-trained VAE, and therefore the upper bound of its performance is dependant on the VAE used.*
 
 ### TODO List:
