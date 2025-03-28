@@ -28,7 +28,7 @@ model:
         exp_residual: False
 
         lpips_weight: 0.0
-        lpips_subsample: -1 # get lpips score of only a single frame in each clip
+        lpips_subsample: -1 # calculate lpips score from lpips_subsample frames in each clip. Use -1 to sample all.
 
     disc:
         use_disc: False
