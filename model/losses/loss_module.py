@@ -32,7 +32,6 @@ class ReconstructionLoss(nn.Module):
         
         cd = config.model.disc
         self.use_disc = cd.use_disc
-        self.bottleneck_mode = config.model.titok.bottleneck_mode
 
         self.lpips = lpips
         self.lpips_weight = config.model.titok.lpips_weight
