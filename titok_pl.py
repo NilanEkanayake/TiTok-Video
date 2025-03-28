@@ -50,7 +50,7 @@ class TitokTrainer(L.LightningModule):
 
         self.seen_recon = 0
 
-        if config.training.log_codebook:
+        if config.training.eval_log_codebook:
             self.codebook_logger = CodebookLogger(codebook_size=math.prod(config.model.titok.fsq_levels))
 
         self.automatic_optimization = False
@@ -105,7 +105,7 @@ class TitokTrainer(L.LightningModule):
 
         self.log_dict(loss_dict, prog_bar=True)
 
-        if self.config.training.log_codebook: # small speed hit?
+        if self.config.training.eval_log_codebook: # small speed hit?
             self.codebook_logger(results_dict['codes'])
 
     def validation_step(self, batch, batch_idx):
@@ -129,7 +129,7 @@ class TitokTrainer(L.LightningModule):
         self.eval_metrics.reset()
         self.seen_recon = 0
 
-        if self.config.training.log_codebook and self.codebook_logger.is_score_ready():
+        if self.config.training.eval_log_codebook and self.codebook_logger.is_score_ready():
             self.logger.log_metrics(self.codebook_logger.get_scores(), step=self.global_step)
 
         if self.config.training.eval_clear_cache:
