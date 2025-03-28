@@ -50,7 +50,7 @@ dataset:
     num_frames: 8
     frames_per_second: 8
     workers: 4
-    pin_memory: False
+    pin_memory: False # uses extra VRAM when enabled.
 
 optimizer:
     titok:
@@ -83,9 +83,9 @@ training:
     max_steps: 300000
     val_step_interval: 250
 
+    eval_log_codebook: True
     eval_recon_log_num: 4 # should be less than eval_sample_size
     eval_sample_size: 32
     eval_batch_size: 4
-    eval_clear_cache: True
 
-    log_codebook: True
+    eval_clear_cache: True
