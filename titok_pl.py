@@ -42,9 +42,9 @@ class TitokTrainer(L.LightningModule):
         if config.training.torch_compile:
             # torch._dynamo.config.compiled_autograd = True
             self.model = torch.compile(self.model)
-            self.eval_metrics['lpips'] = torch.compile(self.eval_metrics['lpips'])
-            if self.use_disc:
-                self.loss_module.disc_model = torch.compile(self.loss_module.disc_model)
+            # self.eval_metrics['lpips'] = torch.compile(self.eval_metrics['lpips'])
+            # if self.use_disc:
+            #     self.loss_module.disc_model = torch.compile(self.loss_module.disc_model)
 
         self.loss_module = ReconstructionLoss(config, self.eval_metrics['lpips'])
 
@@ -177,7 +177,7 @@ class TitokTrainer(L.LightningModule):
         
     def state_dict(self):
         # Don't save lpips
-        return {k: v for k, v in super().state_dict().items() if 'eval_metrics' not in k}
+        return {k: v for k, v in super().state_dict().items() if 'eval_metrics' not in k and 'lpips' not in k}
     
     def on_load_checkpoint(self, checkpoint):
         if self.config.logging.discard_disc_on_resume and self.config.model.disc.use_disc: # keeps everything but the disc and disc optim. For use where changing disc size.
@@ -252,7 +252,14 @@ if __name__ == '__main__':
 
     if init_path:
         orig_sd = torch.load(config.logging.init_from_checkpoint, map_location="cpu", weights_only=False)['state_dict']
-        model_trainer.load_state_dict(orig_sd, strict=False)
+        if config.logging.init_is_latent_ckpt:
+            model_sd = {}
+            for k, v in orig_sd.items():
+                if 'model_layers' in k or 'encoder.ln_post' in k or 'encoder.linear_out' in k or 'decoder.decoder_embed' in k or 'decoder.ln_pre' in k:
+                    model_sd[k.replace('._orig_mod', '')] = v
+        else:
+            model_sd = orig_sd
+        model_trainer.load_state_dict(model_sd, strict=False)
 
     trainer.fit(
         model_trainer,

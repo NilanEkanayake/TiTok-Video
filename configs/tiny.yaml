@@ -10,14 +10,14 @@ logging:
     resume_from_checkpoint:
     init_from_checkpoint:
 
+    init_is_latent_ckpt: True # enable to init from vae-based checkpoint. Replaces the I/O convs and pos_embs, and removes the LNs applied to pixel patches.
+
     discard_disc_on_resume: False
 
 model:
     titok:
         temporal_patch_size: 4
         spatial_patch_size: 16
-
-        bottleneck_mode: fsq
 
         fsq_levels: [7, 5, 5, 5, 5]
 
