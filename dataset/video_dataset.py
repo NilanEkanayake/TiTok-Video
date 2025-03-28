@@ -12,15 +12,21 @@ from torch.utils.data import DataLoader
 from huggingface_hub import HfFileSystem, hf_hub_url #, get_token
 import glob
 
-def convert_hf_shards(shard_path):
-    if shard_path.startswith('hf://'):
-        fs = HfFileSystem()
-        files = [fs.resolve_path(path) for path in fs.glob(shard_path)]
-        shard_path = [hf_hub_url(file.repo_id, file.path_in_repo, repo_type="dataset") for file in files]
-        # shard_path = f"pipe: curl -s -L -H 'Authorization:Bearer {get_token()}' {'::'.join(shard_path)}" # for gated datasets. Add retry/timeout?
+def convert_shards(shard_paths):
+    out_paths = []
+    if type(shard_paths) == str:
+        shard_paths = [shard_paths]
+    for shard_path in shard_paths:
+        if shard_path.startswith('hf://'):
+            fs = HfFileSystem()
+            files = [fs.resolve_path(path) for path in fs.glob(shard_path)]
+            urls = [hf_hub_url(file.repo_id, file.path_in_repo, repo_type="dataset") for file in files]
+            # shard_path = f"pipe: curl -s -L -H 'Authorization:Bearer {get_token()}' {'::'.join(shard_path)}" # for gated datasets. Add retry/timeout?
+            out_paths += urls
+        else:
+            out_paths.append(shard_path)
 
-    return shard_path
-
+    return out_paths
 
 def video_process(data, trg_fps, trg_frames, trg_res, out_dtype=torch.bfloat16, eval=False):
     for sample in data:
@@ -108,7 +114,7 @@ class WebdatasetVideoDataModule(pl.LightningModule):
             out_dtype = dtypes[config.training.precision.split('-')[0]]
 
         train_pipeline = [
-            wds.ResampledShards(convert_hf_shards(train_shard_path)), # no handler?
+            wds.ResampledShards(convert_shards(train_shard_path)), # no handler?
             wds.split_by_worker, # no overlapping entries between workers
             wds.tarfile_to_samples(handler=wds.warn_and_continue),
             wds.shuffle(8, handler=wds.warn_and_continue),
@@ -118,7 +124,7 @@ class WebdatasetVideoDataModule(pl.LightningModule):
         ]
 
         eval_pipeline = [
-            wds.SimpleShardList(convert_hf_shards(eval_shard_path)),
+            wds.SimpleShardList(convert_shards(eval_shard_path)),
             wds.split_by_worker,
             wds.tarfile_to_samples(handler=wds.warn_and_continue),
             lambda data: video_process(data, trg_fps, trg_frames, trg_res, out_dtype, eval=True),
