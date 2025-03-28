@@ -1,0 +1,82 @@
+logging:
+    project: titok_video_speedy_RGB_image_2
+    run_name: TL32-SP16-BS128-RoPEAttn-2kwarmpUp-noCompile
+
+    logging_interval: 50
+
+    save_path: out_tiny
+    save_step_interval: 1000
+    keep_prior_checkpoints: -1 # -1 to keep all
+
+    resume_from_checkpoint:
+    init_from_checkpoint:
+
+model:
+    titok:
+        spatial_patch_size: 16 # 64 internal tokens @ 128p
+
+        fsq_levels: [7, 5, 5, 5, 5]
+        num_latent_tokens: 32 # baseline. Increase to 48 and disable memory in the enc/dec to see diff when the same internal token count is used but all passed through.
+        # also compare to width increase that keeps the same data rate, but allocated to width rather than extra tokens?
+
+        encoder_size: tiny
+        decoder_size: tiny
+        exp_residual: False
+
+        perceptual_weight: 0.0 # 0.0 = disabled
+
+    disc: # experimental
+        use_disc: False
+
+        disc_start: 0
+        disc_factor: 1.0
+        disc_weight: 0.1
+        lecam_weight: 0.0 # 0.0 = disabled, 0.001 normal
+
+        base_gamma: 1.0  # higher gamma smooths more earlier in training.
+        final_gamma: 0.1
+
+dataset:
+    train_dataset: "in_1k/train/imagenet1k-train-{0000..0239}.tar"
+    eval_dataset: "in_1k/eval/imagenet1k-validation-00.tar"
+    resolution: 256
+    workers: 3
+
+optimizer:
+    titok:
+        learning_rate: 1e-4
+        beta1: 0.9
+        beta2: 0.99
+        weight_decay: 1e-4
+        warmup_steps: 2000
+        end_lr: 1e-5
+
+    disc:
+        learning_rate: 1e-4
+        beta1: 0.9
+        beta2: 0.99
+        weight_decay: 1e-4
+        warmup_steps: 1000
+        end_lr: 1e-5
+
+training:
+    torch_compile: False
+    seed: 42
+    max_grad_norm: 1.0
+    
+    batch_size: 128
+
+    enable_tf32: True
+    precision: bf16-mixed
+    train_devices: 1
+    accelerator: 'gpu'
+
+    max_steps: 150000
+    val_step_interval: 250
+
+    eval_recon_log_num: 4 # should be less than eval_sample_size
+    eval_sample_size: 256
+    eval_batch_size: 32
+    eval_clear_cache: True
+
+    log_codebook: True

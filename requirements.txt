@@ -1,0 +1,12 @@
+decord
+einops
+huggingface_hub
+lightning
+numpy
+omegaconf
+scipy
+torch>=2.4.0
+torchmetrics
+wandb[media]
+webdataset
+imageio

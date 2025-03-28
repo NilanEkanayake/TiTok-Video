@@ -1,0 +1,91 @@
+logging:
+    project: pixel_titok_video_3
+    run_name: TL64-BS32
+    logging_interval: 50
+
+    save_path: out_tiny
+    save_step_interval: 1000
+    keep_prior_checkpoints: 2 # -1 to keep all
+
+    resume_from_checkpoint:
+    init_from_checkpoint:
+
+    discard_disc_on_resume: False
+
+model:
+    titok:
+        temporal_patch_size: 4
+        spatial_patch_size: 16
+
+        bottleneck_mode: fsq
+
+        fsq_levels: [7, 5, 5, 5, 5]
+
+        num_latent_tokens: 64
+
+        encoder_size: tiny
+        decoder_size: tiny
+        exp_residual: False
+
+        lpips_weight: 0.0
+        lpips_subsample: -1 # get lpips score of only a single frame in each clip
+
+    disc:
+        use_disc: False
+        disc_layers: 3
+        disc_filters: 64
+
+        disc_start: 45000
+        disc_factor: 1.0
+        disc_weight: 0.3
+        lecam_weight: 0.001 # 0.0 = disabled, 0.001 normal
+
+        every_n: 3 # train disc every n generator steps
+        adapt_disc_weight: False
+
+dataset:
+    train_dataset: "hf://datasets/sailvideo/webvid10m_resize128/**/*.tar"
+    eval_dataset: "eval_dataset/02.tar"
+    resolution: 128
+    num_frames: 8
+    frames_per_second: 8
+    workers: 4
+    pin_memory: False
+
+optimizer:
+    titok:
+        learning_rate: 1e-4
+        beta1: 0.9
+        beta2: 0.99
+        weight_decay: 1e-4 # 1e-4 -> 0.0001
+        warmup_steps: 2000 # 2000
+        end_lr: 1e-5
+
+    disc:
+        learning_rate: 1e-5 # See https://arxiv.org/pdf/2501.09755
+        beta1: 0.9
+        beta2: 0.99
+        weight_decay: 1e-4 # lower?
+        warmup_steps: 0
+        end_lr: 1e-6
+
+training:
+    torch_compile: False
+    seed: 42
+    max_grad_norm: 1.0
+    
+    batch_size: 32
+    enable_tf32: True
+    precision: bf16-mixed
+    train_devices: 1
+    accelerator: 'gpu'
+
+    max_steps: 300000
+    val_step_interval: 250
+
+    eval_recon_log_num: 4 # should be less than eval_sample_size
+    eval_sample_size: 32
+    eval_batch_size: 4
+    eval_clear_cache: True
+
+    log_codebook: True
