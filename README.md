@@ -1,7 +1,9 @@
 # TiTok for Video Tokenization
 
 ### Models:
-TODO
+| Stage | Resolution and Frames | Latent tokens | Codebook Size | Losses | Model |
+| ------------- | ------------- | ------------- | ------------- | ------------- | ------------- |
+| 3 | 128x128p, 32 frames | 128 | ~4096 | MSE+LPIPS+reconGAN | [checkpoint](https://huggingface.co/NilanE/TiTok-Video-128p-32f-128tok) |
 
 ### Model eval:
 TODO
