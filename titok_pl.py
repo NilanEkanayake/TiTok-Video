@@ -19,6 +19,8 @@ from model.losses.loss_module import ReconstructionLoss
 from train_utils.lr_schedulers import get_scheduler
 from train_utils.codebook_logging import CodebookLogger
 
+from model.losses.lpips import LPIPS
+
     
 class TitokTrainer(L.LightningModule):
     def __init__(self, config):
@@ -32,19 +34,21 @@ class TitokTrainer(L.LightningModule):
             {
                 "psnr": PeakSignalNoiseRatio(),
                 "ssim": StructuralSimilarityIndexMeasure(),
-                "lpips": LearnedPerceptualImagePatchSimilarity(net_type='vgg').eval(),
+                # "lpips": LearnedPerceptualImagePatchSimilarity(net_type='vgg').eval(),
             },
             prefix="eval/",
         )
-
-        self.eval_metrics['lpips'].requires_grad_(False)
+        
+        self.lpips = LPIPS().eval() # use original lpips to allow compiling
+        self.lpips.requires_grad_(False)
+        self.lpips_scores = []
 
         if config.training.torch_compile:
             torch._dynamo.config.compiled_autograd = True
             self.model = torch.compile(self.model)
-            self.eval_metrics['lpips'] = torch.compile(self.eval_metrics['lpips'])
+            self.lpips = torch.compile(self.lpips)
 
-        self.loss_module = ReconstructionLoss(config, self.eval_metrics['lpips'])
+        self.loss_module = ReconstructionLoss(config, self.lpips)
 
         self.seen_recon = 0
 
@@ -112,6 +116,7 @@ class TitokTrainer(L.LightningModule):
             recon, results_dict = self.model(orig)
             recon = recon.clamp(-1, 1)
 
+            self.lpips_scores.append(self.lpips(rearrange(recon, "b c t h w -> (b t) c h w"), rearrange(orig, "b c t h w -> (b t) c h w")).mean())
             self.eval_metrics.update(rearrange(recon, "b c t h w -> (b t) c h w"), rearrange(orig, "b c t h w -> (b t) c h w"))
 
         for x, y in zip(recon, orig):
@@ -123,7 +128,10 @@ class TitokTrainer(L.LightningModule):
 
 
     def on_validation_epoch_end(self):
+        self.log_dict({f"eval/lpips": sum(self.lpips_scores) / len(self.lpips_scores)})
         self.logger.log_metrics(self.eval_metrics.compute(), step=self.global_step)
+
+        self.lpips_scores = []
         self.eval_metrics.reset()
         self.seen_recon = 0
 

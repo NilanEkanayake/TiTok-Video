@@ -97,9 +97,9 @@ class ReconstructionLoss(nn.Module):
 
                 recon_sampled = recon[batch_indices, :, random_frames, :, :]
                 target_sampled = target[batch_indices, :, random_frames, :, :]
-                lpips_loss = self.lpips(recon_sampled.clamp(-1, 1), target_sampled)
+                lpips_loss = self.lpips(recon_sampled.clamp(-1, 1), target_sampled).mean()
             else:
-                lpips_loss = self.lpips(rearrange(recon.clamp(-1, 1), "b c t h w -> (b t) c h w"), rearrange(target, "b c t h w -> (b t) c h w"))
+                lpips_loss = self.lpips(rearrange(recon.clamp(-1, 1), "b c t h w -> (b t) c h w"), rearrange(target, "b c t h w -> (b t) c h w")).mean()
             loss_dict['lpips_loss'] = lpips_loss.clone().detach()
 
         # adversarial loss
