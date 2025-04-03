@@ -24,7 +24,7 @@ class TitokTrainer(L.LightningModule):
     def __init__(self, config):
         super().__init__()
         self.config = config
-        self.use_disc = config.model.disc.get('use_disc', False)
+        self.use_disc = config.model.disc.use_disc
         self.clip_grads = config.training.get('max_grad_norm', False)
         self.model = TiTok(config)
 
@@ -40,11 +40,9 @@ class TitokTrainer(L.LightningModule):
         self.eval_metrics['lpips'].requires_grad_(False)
 
         if config.training.torch_compile:
-            # torch._dynamo.config.compiled_autograd = True
+            torch._dynamo.config.compiled_autograd = True
             self.model = torch.compile(self.model)
-            # self.eval_metrics['lpips'] = torch.compile(self.eval_metrics['lpips'])
-            # if self.use_disc:
-            #     self.loss_module.disc_model = torch.compile(self.loss_module.disc_model)
+            self.eval_metrics['lpips'] = torch.compile(self.eval_metrics['lpips'])
 
         self.loss_module = ReconstructionLoss(config, self.eval_metrics['lpips'])
 

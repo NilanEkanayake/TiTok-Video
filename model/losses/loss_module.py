@@ -3,9 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from einops import rearrange
 
-# from model.discriminator.titok_disc import TiTokDiscriminator
-from model.discriminator.n_layer import NLayerDiscriminator, NLayerDiscriminator3D, weights_init
-# from model.discriminator.n_layer_compare import NLayerDiscriminator, NLayerDiscriminator3D, weights_init
+from model.discriminator.vit_disc import ViTDiscriminator
 
 def lecam_reg(real_pred, fake_pred, lecam_ema):
     reg = torch.mean(F.relu(real_pred - lecam_ema.logits_fake_ema).pow(2)) + torch.mean(
@@ -42,11 +40,18 @@ class ReconstructionLoss(nn.Module):
             self.disc_factor = cd.disc_factor
             self.disc_weight = cd.disc_weight
 
-            self.disc_model = NLayerDiscriminator3D(
-                input_nc=3*2, n_layers=cd.disc_layers, ndf=cd.disc_filters, #, use_actnorm=False
-            ).apply(weights_init)
+            self.disc_model = ViTDiscriminator(
+                model_size=cd.model_size,
+                in_channels=3*2, # RGB * 2 for concat
+                in_spatial_size=config.dataset.resolution,
+                in_temporal_size=config.dataset.num_frames,
+                spatial_patch_size=cd.spatial_patch_size,
+                temporal_patch_size=cd.temporal_patch_size,
+            )
 
-            # self.disc_model = TiTokDiscriminator(in_channels=3*2)
+            if config.training.torch_compile:
+                torch._dynamo.config.compiled_autograd = True
+                self.disc_model = torch.compile(self.disc_model)
             
             self.lecam_weight = cd.lecam_weight
             if self.lecam_weight > 0:
@@ -112,16 +117,10 @@ class ReconstructionLoss(nn.Module):
                 param.requires_grad = False
             ############################
 
-            # recon = rearrange(recon, "b c t h w -> (b t) c h w")
-            # target = rearrange(target, "b c t h w -> (b t) c h w")
-
             logits_real = self.disc_model(torch.cat((target, recon), dim=1))
             logits_fake = self.disc_model(torch.cat((recon, target), dim=1))
             logits_relative = logits_fake - logits_real
             g_loss = F.softplus(-logits_relative).mean()
-
-            # logits_relative = self.disc_model(target, recon)
-            # g_loss = F.softplus(-logits_relative).mean()
 
             # adaptive disc weight
             if self.training and self.config.model.disc.adapt_disc_weight:
@@ -145,9 +144,6 @@ class ReconstructionLoss(nn.Module):
     
     def _forward_discriminator(self, target, recon, global_step):
         loss_dict = {}
-
-        # recon = rearrange(recon, "b c t h w -> (b t) c h w")
-        # target = rearrange(target, "b c t h w -> (b t) c h w")
         
         target = target.requires_grad_(True).contiguous()
         recon = recon.detach().requires_grad_(True).contiguous()
@@ -166,9 +162,6 @@ class ReconstructionLoss(nn.Module):
         # https://github.com/AilsaF/RS-GAN and https://github.com/brownvc/R3GAN 
         logits_relative = logits_real - logits_fake
         adv_loss = F.softplus(-logits_relative).mean()
-
-        # logits_relative = self.disc_model(target, recon)
-        # adv_loss = F.softplus(logits_relative).mean()
 
         if self.lecam_weight > 0:
             self.lecam_ema.update(logits_real, logits_fake)

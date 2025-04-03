@@ -6,16 +6,14 @@ from einops.layers.torch import Rearrange
 def _expand_token(token, batch_size: int):
     return token.unsqueeze(0).expand(batch_size, -1, -1)
 
-class TiTokDiscriminator(nn.Module):
+class ViTDiscriminator(nn.Module):
     def __init__(
             self,
-            num_layers=4, # 4
-            num_heads=4, # 4
-            d_model=256, # 256
+            model_size='tiny_512',
             in_channels=3,
             in_spatial_size=128,
             in_temporal_size=8,
-            spatial_patch_size=8, # 16
+            spatial_patch_size=16,
             temporal_patch_size=4,
         ):
         super().__init__()
@@ -25,14 +23,31 @@ class TiTokDiscriminator(nn.Module):
         self.spatial_patch_size = spatial_patch_size
         self.temporal_patch_size = temporal_patch_size
 
+        self.width = {
+            "tiny": 256,
+            "tiny_512": 512,
+            "small": 512,
+            "base": 768,
+            "large": 1024,
+        }[model_size]
+        self.num_layers = {
+            "tiny": 4,
+            "tiny_512": 4,
+            "small": 8,
+            "base": 12,
+            "large": 24,
+        }[model_size]
+        self.num_heads = {
+            "tiny": 4,
+            "tiny_512": 4,
+            "small": 8,
+            "base": 12,
+            "large": 16,
+        }[model_size]
+
         assert self.spatial_size % self.spatial_patch_size == 0, "input dimensions should be evenly divisible by respective patch sizes"
 
         self.grid_size = ((self.spatial_size // self.spatial_patch_size) ** 2) * (self.temporal_size // self.temporal_patch_size)
-
-        self.width = d_model
-        self.num_layers = num_layers
-        self.num_heads = num_heads
-
         in_channel_depth = self.in_channels * self.temporal_patch_size * self.spatial_patch_size ** 2
         scale = self.width ** -0.5
 
