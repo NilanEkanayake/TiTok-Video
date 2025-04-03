@@ -41,7 +41,7 @@ class TitokTrainer(L.LightningModule):
         
         self.lpips = LPIPS().eval() # use original lpips to allow compiling
         self.lpips.requires_grad_(False)
-        self.lpips_scores = []
+        self.lpips_scores = torch.zeros(config.training.eval_sample_size//config.training.eval_batch_size)
 
         if config.training.torch_compile:
             torch._dynamo.config.compiled_autograd = True
@@ -116,7 +116,7 @@ class TitokTrainer(L.LightningModule):
             recon, results_dict = self.model(orig)
             recon = recon.clamp(-1, 1)
 
-            self.lpips_scores.append(self.lpips(rearrange(recon, "b c t h w -> (b t) c h w"), rearrange(orig, "b c t h w -> (b t) c h w")).mean())
+            self.lpips_scores[batch_idx] = self.lpips(rearrange(recon, "b c t h w -> (b t) c h w"), rearrange(orig, "b c t h w -> (b t) c h w")).mean()
             self.eval_metrics.update(rearrange(recon, "b c t h w -> (b t) c h w"), rearrange(orig, "b c t h w -> (b t) c h w"))
 
         for x, y in zip(recon, orig):
@@ -128,10 +128,10 @@ class TitokTrainer(L.LightningModule):
 
 
     def on_validation_epoch_end(self):
-        self.log_dict({f"eval/lpips": sum(self.lpips_scores) / len(self.lpips_scores)})
+        self.log_dict({f"eval/lpips": self.lpips_scores.mean()})
         self.logger.log_metrics(self.eval_metrics.compute(), step=self.global_step)
 
-        self.lpips_scores = []
+        self.lpips_scores *= 0
         self.eval_metrics.reset()
         self.seen_recon = 0
 
