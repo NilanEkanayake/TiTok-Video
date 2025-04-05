@@ -16,6 +16,8 @@ python3 -m pip install -r requirements.txt
   
 ## Inference:
 Run [the eval notebook](inference.ipynb) in jupyter-lab.
+For a more detailed guide, see [INFERENCE.md](INFERENCE.md)
+
 
 ## Training:
 #### Launch:
