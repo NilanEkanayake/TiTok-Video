@@ -1,4 +1,13 @@
 # TiTok for Video Tokenization
+### Reconstructions (Current model has GAN artifacts):
+<p>
+<img src="assets/recon_1.gif" alt="teaser" width=49%>
+<img src="assets/recon_2.gif" alt="teaser" width=49%>
+</p>
+<p>
+<img src="assets/recon_3.gif" alt="teaser" width=49%>
+<img src="assets/recon_4.gif" alt="teaser" width=49%>
+</p>
 
 ### Models:
 | Stage | Input/Output dimensions | Latent tokens | Codebook Size | Losses | Model |
