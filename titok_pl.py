@@ -5,8 +5,6 @@ from lightning.pytorch.callbacks import ModelCheckpoint
 from lightning.pytorch.utilities import grad_norm
 from torch import optim, nn
 import torch.nn.functional as F
-from torchmetrics.image import PeakSignalNoiseRatio, LearnedPerceptualImagePatchSimilarity, StructuralSimilarityIndexMeasure
-from torchmetrics import MetricCollection
 
 from einops import rearrange
 from omegaconf import OmegaConf
@@ -19,44 +17,38 @@ from model.losses.loss_module import ReconstructionLoss
 from train_utils.lr_schedulers import get_scheduler
 from train_utils.codebook_logging import CodebookLogger
 
-from model.losses.lpips import LPIPS
+from model.metrics.eval_metrics import EvalMetrics
 
     
 class TitokTrainer(L.LightningModule):
     def __init__(self, config):
         super().__init__()
         self.config = config
-        self.use_disc = config.model.disc.use_disc
-        self.clip_grads = config.training.get('max_grad_norm', False)
+        self.use_disc = config.losses.disc.use_disc
+        self.clip_grads = config.training.main.get('max_grad_norm', False)
+
         self.model = TiTok(config)
+        self.eval_metrics = EvalMetrics(config)
 
-        self.eval_metrics = MetricCollection(
-            {
-                "psnr": PeakSignalNoiseRatio(),
-                "ssim": StructuralSimilarityIndexMeasure(),
-                # "lpips": LearnedPerceptualImagePatchSimilarity(net_type='vgg').eval(),
-            },
-            prefix="eval/",
-        )
-        
-        self.lpips = LPIPS().eval() # use original lpips to allow compiling
-        self.lpips.requires_grad_(False)
-        self.lpips_scores = torch.zeros(config.training.eval_sample_size//config.training.eval_batch_size)
+        if self.config.training.eval.offload_metrics:
+            self.eval_metrics.set_device('cpu') # offload to cpu when not doing eval
 
-        if config.training.torch_compile:
-            torch._dynamo.config.compiled_autograd = True
+        self.loss_module = ReconstructionLoss(config)
+
+        if config.training.main.torch_compile:
+            # torch._dynamo.config.compiled_autograd = True
             self.model = torch.compile(self.model)
-            self.lpips = torch.compile(self.lpips)
 
-        self.loss_module = ReconstructionLoss(config, self.lpips)
-
-        self.seen_recon = 0
-
-        if config.training.eval_log_codebook:
+        if config.training.eval.log_codebook:
             self.codebook_logger = CodebookLogger(codebook_size=math.prod(config.model.titok.fsq_levels))
 
+        if config.losses.disc.use_disc and config.losses.disc.freeze_encoder:
+            for param in self.model.encoder.parameters():
+                param.requires_grad = False
+        
         self.automatic_optimization = False
         self.strict_loading = False # to allow loading from lpips-less checkpoint
+
 
     def training_step(self, batch, batch_idx):
         orig = batch['video']
@@ -76,73 +68,97 @@ class TitokTrainer(L.LightningModule):
         self.toggle_optimizer(opt_g)
 
         x, results_dict = self.model(orig)
-        loss, loss_dict = self.loss_module(orig, x, self.global_step, last_layer=self.model.decoder.conv_out[-1].weight, results_dict=results_dict) # normally -1
 
-        opt_g.zero_grad(set_to_none=True)
+        loss, loss_dict = self.loss_module(
+            orig,
+            x,
+            self.global_step,
+            results_dict=results_dict,
+        )
+
         self.manual_backward(loss)
         if self.clip_grads:
-            self.clip_gradients(opt_g, gradient_clip_val=config.training.max_grad_norm)
-        if self.global_step % self.config.training.val_step_interval == 0:
+            self.clip_gradients(opt_g, gradient_clip_val=self.config.training.main.max_grad_norm)
+        if self.global_step % self.config.training.eval.eval_step_interval == 0:
             self.log_dict(grad_norm(self.model, norm_type=2))
         opt_g.step()
         sched_g.step()
+        opt_g.zero_grad(set_to_none=True)
         self.untoggle_optimizer(opt_g)
         ############################
 
-        if self.use_disc and self.global_step >= self.config.model.disc.disc_start and self.global_step % self.config.model.disc.every_n == 0:
-            self.toggle_optimizer(opt_d)
+        if self.use_disc and self.global_step >= self.config.losses.disc.disc_start and self.global_step % self.config.losses.disc.every_n == 0:
+            with torch.nn.attention.sdpa_kernel(torch.nn.attention.SDPBackend.MATH):
+                self.toggle_optimizer(opt_d)
 
-            d_loss, d_loss_dict = self.loss_module(orig, x, self.global_step, disc_forward=True)
-            loss_dict.update(d_loss_dict)
+                d_loss, d_loss_dict = self.loss_module(orig, x, self.global_step, disc_forward=True)
+                loss_dict.update(d_loss_dict)
 
-            opt_d.zero_grad(set_to_none=True)
-            self.manual_backward(d_loss)
-            if self.clip_grads:
-                self.clip_gradients(opt_d, gradient_clip_val=config.training.max_grad_norm)
-            if self.global_step % self.config.training.val_step_interval == 0:
-                self.log_dict(grad_norm(self.loss_module, norm_type=2))
-            opt_d.step()
-            sched_d.step()
-            self.untoggle_optimizer(opt_d)
+                self.manual_backward(d_loss)
+                if self.clip_grads:
+                    self.clip_gradients(opt_d, gradient_clip_val=self.config.training.main.max_grad_norm)
+                if self.global_step % self.config.training.eval.eval_step_interval == 0:
+                    self.log_dict(grad_norm(self.loss_module, norm_type=2))
+                opt_d.step()
+                sched_d.step()
+                opt_d.zero_grad(set_to_none=True)
+                self.untoggle_optimizer(opt_d)
 
         self.log_dict(loss_dict, prog_bar=True)
 
-        if self.config.training.eval_log_codebook: # small speed hit?
-            self.codebook_logger(results_dict['codes'])
+        if self.config.training.eval.log_codebook: # small speed hit?
+            self.codebook_logger(results_dict['codes'].detach().cpu())
+
+
+    def on_validation_epoch_start(self):
+        if self.config.training.eval.offload_metrics:
+            self.eval_metrics.set_device(next(self.model.parameters()).device) # move to gpu
+
+        # recon sampling from eval dataset
+        num_recon = self.config.training.eval.log_recon_num
+        if self.config.training.eval.random_recon:
+            self.recon_indexes = torch.randperm(self.config.training.eval.num_eval)[:num_recon].tolist() # random sampling
+        else:
+            self.recon_indexes = list(range(num_recon)) # first num_recon
+
+        self.seen_eval = 0
+        self.seen_recon = 0
+
 
     def validation_step(self, batch, batch_idx):
         with torch.no_grad():
             orig = batch['video']
-            recon, results_dict = self.model(orig)
+            recon, _ = self.model(orig)
             recon = recon.clamp(-1, 1)
 
-            self.lpips_scores[batch_idx] = self.lpips(rearrange(recon, "b c t h w -> (b t) c h w"), rearrange(orig, "b c t h w -> (b t) c h w")).mean()
-            self.eval_metrics.update(rearrange(recon, "b c t h w -> (b t) c h w"), rearrange(orig, "b c t h w -> (b t) c h w"))
+            self.eval_metrics.update(recon, orig)
 
         for x, y in zip(recon, orig):
-            if self.seen_recon < self.config.training.eval_recon_log_num: 
+            if self.seen_eval in self.recon_indexes:
                 merged_video = torch.cat((y, x), dim=-1).permute(1, 0, 2, 3).cpu().float().numpy() # tch(W) concat
                 merged_video = ((merged_video + 1) / 2 * 255).astype(np.uint8)
                 self.seen_recon += 1
                 self.logger.log_video(key=f"Video recon {self.seen_recon}", videos=[merged_video], step=self.global_step, fps=[self.config.dataset.frames_per_second])
+            self.seen_eval += 1
 
 
     def on_validation_epoch_end(self):
-        self.log_dict({f"eval/lpips": self.lpips_scores.mean()})
         self.logger.log_metrics(self.eval_metrics.compute(), step=self.global_step)
-
-        self.lpips_scores *= 0
         self.eval_metrics.reset()
-        self.seen_recon = 0
 
-        if self.config.training.eval_log_codebook and self.codebook_logger.is_score_ready():
+        if self.config.training.eval.log_codebook and self.codebook_logger.is_score_ready():
             self.logger.log_metrics(self.codebook_logger.get_scores(), step=self.global_step)
 
-        if self.config.training.eval_clear_cache:
+        if self.config.training.eval.offload_metrics:
+            self.eval_metrics.set_device('cpu')
+
+        if self.config.training.eval.clear_cache:
             torch.cuda.empty_cache()
+
 
     def forward(self, x):
         pass
+
 
     def configure_optimizers(self):
         opt_conf_g = self.config.optimizer.titok
@@ -151,60 +167,41 @@ class TitokTrainer(L.LightningModule):
             weight_decay=opt_conf_g.weight_decay,
             lr=opt_conf_g.learning_rate, 
             betas=[opt_conf_g.beta1, opt_conf_g.beta2],
-            # fused=True,
         )
         lr_g = get_scheduler(
             name='cosine',
             optimizer=opt_g,
             num_warmup_steps=opt_conf_g.warmup_steps,
-            num_training_steps=self.config.training.max_steps,
+            num_training_steps=self.config.training.main.max_steps,
             base_lr=opt_conf_g.learning_rate,
             end_lr=opt_conf_g.end_lr,
         )
 
-        if self.config.model.disc.use_disc:
+        if self.config.losses.disc.use_disc:
             opt_conf_d = self.config.optimizer.disc
             opt_d = optim.AdamW(
                 self.loss_module.disc_model.parameters(),
                 lr=opt_conf_d.learning_rate,
                 weight_decay=opt_conf_d.weight_decay,
-                betas=[opt_conf_d.beta1, opt_conf_d.beta2])
+                betas=[opt_conf_d.beta1, opt_conf_d.beta2]
+            )
+
             lr_d = get_scheduler(
                 name='cosine',
                 optimizer=opt_d,
                 num_warmup_steps=opt_conf_d.warmup_steps,
-                num_training_steps=self.config.training.max_steps - self.config.model.disc.disc_start, # assume global_step starting from 0
+                num_training_steps=self.config.training.main.max_steps - self.config.losses.disc.disc_start, # assume global_step starting from 0
                 base_lr=opt_conf_d.learning_rate,
                 end_lr=opt_conf_d.end_lr,
             )
+
             return [opt_g, opt_d], [lr_g, lr_d]
         else:
             return [opt_g], [lr_g]
         
     def state_dict(self):
-        # Don't save lpips
-        return {k: v for k, v in super().state_dict().items() if 'eval_metrics' not in k and 'lpips' not in k}
-    
-    def on_load_checkpoint(self, checkpoint):
-        if self.config.logging.discard_disc_on_resume and self.config.model.disc.use_disc: # keeps everything but the disc and disc optim. For use where changing disc size.
-            opt_conf_d = self.config.optimizer.disc
-            opt_d = optim.AdamW(
-                self.loss_module.disc_model.parameters(),
-                lr=opt_conf_d.learning_rate,
-                weight_decay=opt_conf_d.weight_decay,
-                betas=[opt_conf_d.beta1, opt_conf_d.beta2])
-
-            orig_sd = checkpoint['state_dict']
-            new_sd = {}
-
-            for k, v in orig_sd.items():
-                if not k.startswith('loss_module.disc_model'):
-                    new_sd[k] = v
-
-            checkpoint['state_dict'] = new_sd
-            checkpoint['optimizer_states'][1] = opt_d.state_dict() # fresh optim
-
-            # don't clear disc LR sched?
+        # Don't save metrics
+        return {k: v for k, v in super().state_dict().items() if 'eval_metrics' not in k and 'perceptual_model' not in k}
 
 
 
@@ -213,58 +210,54 @@ if __name__ == '__main__':
     yaml_conf = OmegaConf.load(cli_conf.config)
     config = OmegaConf.merge(yaml_conf, cli_conf)
 
-    L.seed_everything(config.training.seed)
-    if config.training.enable_tf32:
+    L.seed_everything(config.training.main.seed)
+    if config.training.main.enable_tf32:
         torch.backends.cuda.matmul.allow_tf32 = True
         torch.backends.cudnn.allow_tf32 = True
+
+        torch.backends.cuda.matmul.allow_bf16_reduced_precision_reduction = True
+        torch.backends.cuda.matmul.allow_fp16_reduced_precision_reduction = True
     torch.backends.cudnn.benchmark = True
     torch.backends.cudnn.deterministic = False
 
     torch.set_float32_matmul_precision("medium")
 
-    resume_path = config.logging.get('resume_from_checkpoint', False)
-    init_path = config.logging.get('init_from_checkpoint', False)
+    resume_path = config.general.checkpoints.get('resume_from_checkpoint', False)
+    init_path = config.general.checkpoints.get('init_from_checkpoint', False)
 
     assert not (resume_path and init_path), 'Only one of resume_from_checkpoint and init_from_checkpoint should be specified.'
 
     checkpoint_callback = ModelCheckpoint(
-        dirpath=config.logging.save_path,
-        every_n_train_steps=config.logging.save_step_interval,
-        save_top_k=config.logging.keep_prior_checkpoints,
+        dirpath=config.general.checkpoints.save_path,
+        every_n_train_steps=config.general.checkpoints.save_interval,
+        save_top_k=config.general.checkpoints.keep_prior,
         monitor='step', mode='max', # allow saving of N number of most recent checkpoints by highest step count.
     )
     
     wandb_logger = WandbLogger(
-        name=config.logging.run_name,
-        project=config.logging.project,
+        name=config.general.wandb.run_name,
+        project=config.general.wandb.project,
     )
 
     dataloaders = WebdatasetVideoDataModule(config)
 
     trainer = L.Trainer(
-        devices=config.training.train_devices,
-        accelerator=config.training.accelerator,
-        precision=config.training.precision,
-        max_steps=config.training.max_steps,
+        devices=config.training.main.train_devices,
+        accelerator=config.training.main.accelerator,
+        precision=config.training.main.precision,
+        max_steps=config.training.main.max_steps,
         logger=wandb_logger,
         check_val_every_n_epoch=None,
-        val_check_interval=config.training.val_step_interval,
-        log_every_n_steps=config.logging.logging_interval,
+        val_check_interval=config.training.eval.eval_step_interval,
+        log_every_n_steps=config.general.wandb.log_step_interval,
         callbacks=[checkpoint_callback],
-        limit_val_batches=config.training.eval_sample_size//config.training.eval_batch_size,
+        limit_val_batches=config.training.eval.num_eval//config.training.eval.batch_size,
     )
 
     model_trainer = TitokTrainer(config)
 
     if init_path:
-        orig_sd = torch.load(config.logging.init_from_checkpoint, map_location="cpu", weights_only=False)['state_dict']
-        if config.logging.init_is_latent_ckpt:
-            model_sd = {}
-            for k, v in orig_sd.items():
-                if 'model_layers' in k or 'encoder.ln_post' in k or 'encoder.linear_out' in k or 'decoder.decoder_embed' in k or 'decoder.ln_pre' in k:
-                    model_sd[k.replace('._orig_mod', '')] = v
-        else:
-            model_sd = orig_sd
+        model_sd = torch.load(config.general.checkpoints.init_from_checkpoint, map_location="cpu", weights_only=False)['state_dict']
         model_trainer.load_state_dict(model_sd, strict=False)
 
     trainer.fit(

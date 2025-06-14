@@ -1,4 +1,6 @@
 # TiTok for Video Tokenization
+## NOTE:
+The readme and inference/eval notebooks are currently outdated but will be refreshed soon.
 ### Reconstructions (Current model has GAN artifacts):
 <p>
 <img src="assets/recon_1.gif" alt="teaser" width=49%>

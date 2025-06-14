@@ -21,190 +21,152 @@ Reference:
 import torch
 import torch.nn as nn
 from model.base.transformer import ResidualAttentionBlock
+
 from einops.layers.torch import Rearrange
 import math
-from torchvision.transforms import v2, functional
 
 def _expand_token(token, batch_size: int):
     return token.unsqueeze(0).expand(batch_size, -1, -1)
 
+def get_model_dims(model_size='tiny', head_dim=64, mlp_ratio=4.0):
+    if model_size.endswith('_thin'): # https://arxiv.org/pdf/2505.20802
+        model_size = model_size[:-5]
+        layers = {
+            "tiny": 2,
+            "small": 5,
+            "base": 7,
+            "large": 8,
+        }[model_size]
+        heads = {
+            "tiny": 8,
+            "small": 12,
+            "base": 16,
+            "large": 30,
+        }[model_size]
+        mlp_ratio = mlp_ratio/2
+    else:
+        layers = {
+            "tiny": 4,
+            "small": 8,
+            "base": 12,
+            "large": 24,
+        }[model_size]
+        heads = {
+            "tiny": 4,
+            "small": 8,
+            "base": 12,
+            "large": 16,
+        }[model_size]
+
+    width = int(head_dim*heads)
+
+    return width, layers, heads, mlp_ratio
+        
     
 class TiTokEncoder(nn.Module):
-    def __init__(self, model_config, dataset_config, token_size):
+    def __init__(
+            self,
+            model_size="tiny",
+            in_grid=(4, 16, 16), # THW
+            in_channels=512,
+            out_tokens=512,
+            out_channels=5,
+        ):
         super().__init__()
-        self.model_config = model_config
-        self.dataset_config = dataset_config
 
-        self.spatial_size = dataset_config.resolution
-        self.temporal_size = dataset_config.num_frames
-        self.spatial_patch_size = model_config.spatial_patch_size
-        self.temporal_patch_size = model_config.temporal_patch_size
-        assert self.spatial_size % self.spatial_patch_size == 0 and self.temporal_size % self.temporal_patch_size == 0, "input dimensions should be evenly divisible by respective patch sizes"
-        self.grid_size = ((self.spatial_size // self.spatial_patch_size) ** 2) * (self.temporal_size // self.temporal_patch_size)
-        self.model_size = model_config.encoder_size
-        self.num_latent_tokens = model_config.num_latent_tokens
-        self.token_size = token_size
-        self.in_channels = 3 # RGB
+        self.num_latent_tokens = out_tokens
+        self.token_size = out_channels
 
-        self.width = {
-                "tiny": 256,
-                "small": 512,
-                "base": 768,
-                "large": 1024,
-            }[self.model_size]
-        self.num_layers = {
-                "tiny": 4,
-                "small": 8,
-                "base": 12,
-                "large": 24,
-            }[self.model_size]
-        self.num_heads = {
-                "tiny": 4,
-                "small": 8,
-                "base": 12,
-                "large": 16,
-            }[self.model_size]
-        
-        st_dims = (self.temporal_patch_size, self.spatial_patch_size, self.spatial_patch_size)
+        self.grid = in_grid
+        self.grid_size = math.prod(self.grid)
+        self.in_channels = in_channels
 
-        self.patch_embed = nn.Conv3d(
-            in_channels=self.in_channels,
-            out_channels=self.width,
-            kernel_size=st_dims,
-            stride=st_dims,
-            padding=0,
-            bias=True
-        )
-        
+        self.width, self.num_layers, self.num_heads, mlp_ratio = get_model_dims(model_size)
         scale = self.width ** -0.5
 
         self.latent_tokens = nn.Parameter(scale * torch.randn(self.num_latent_tokens, self.width))
-        self.positional_embedding = nn.Parameter(scale * torch.randn(self.grid_size, self.width))        
+        self.positional_embedding = nn.Parameter(scale * torch.randn(self.grid_size, self.width))
 
-        self.model_layers = nn.ModuleList()
+        self.proj_in = nn.Linear(self.in_channels, self.width, bias=True)
         
         #############################
+        self.model_layers = nn.ModuleList()
         for i in range(self.num_layers):
-            self.model_layers.append(ResidualAttentionBlock(d_model=self.width, n_head=self.num_heads, exp_res=model_config.exp_residual))
+            self.model_layers.append(ResidualAttentionBlock(d_model=self.width, n_head=self.num_heads, mlp_ratio=mlp_ratio))
         #############################
 
         self.ln_post = nn.LayerNorm(self.width)
-
-        self.linear_out = nn.Linear(self.width, self.token_size, bias=True)
+        self.proj_out = nn.Linear(self.width, self.token_size, bias=True)
 
 
     def forward(self, x):
-        x = self.patch_embed(x)
-
-        x = x.reshape(x.shape[0], x.shape[1], -1)
-        x = x.permute(0, 2, 1)
+        x = x.reshape(x.shape[0], x.shape[1], -1) # BCTHW -> BC(THW)/BCL
+        x = x.permute(0, 2, 1) # BCL -> BLC
+        x = self.proj_in(x)
 
         x = x + self.positional_embedding.to(x.dtype)
-
         latent_tokens = _expand_token(self.latent_tokens, x.shape[0]).to(x.dtype)
 
-        x = torch.cat([x, latent_tokens], dim=1)
+        x = torch.cat([x, latent_tokens], dim=1).contiguous()
 
         for i in range(len(self.model_layers)):
             x = self.model_layers[i](x)
 
         latent_tokens = x[:, -self.num_latent_tokens:]
         latent_tokens = self.ln_post(latent_tokens)
-
-        latent_tokens = self.linear_out(latent_tokens)
-            
+        latent_tokens = self.proj_out(latent_tokens)
+        
         return latent_tokens
-    
+
 
 class TiTokDecoder(nn.Module):
-    def __init__(self, model_config, dataset_config, token_size):
+    def __init__(
+            self,
+            model_size="tiny",
+            in_tokens=512,
+            in_channels=5,
+            out_grid=(4, 16, 16), # THW
+            out_channels=512,
+        ):
         super().__init__()
-        self.model_config = model_config
-        self.dataset_config = dataset_config
 
-        self.spatial_size = dataset_config.resolution
-        self.temporal_size = dataset_config.num_frames
-        self.spatial_patch_size = model_config.spatial_patch_size
-        self.temporal_patch_size = model_config.temporal_patch_size
-        self.grid_size = ((self.spatial_size // self.spatial_patch_size) ** 2) * (self.temporal_size // self.temporal_patch_size)
+        self.num_latent_tokens = in_tokens
+        self.token_size = in_channels
 
-        self.out_channels = 3 # RGB
-        self.model_size = model_config.decoder_size
-        self.num_latent_tokens = model_config.num_latent_tokens
-        self.token_size = token_size
-
-        self.width = {
-                "tiny": 256,
-                "small": 512,
-                "base": 768,
-                "large": 1024,
-            }[self.model_size]
-        self.num_layers = {
-                "tiny": 4,
-                "small": 8,
-                "base": 12,
-                "large": 24,
-            }[self.model_size]
-        self.num_heads = {
-                "tiny": 4,
-                "small": 8,
-                "base": 12,
-                "large": 16,
-            }[self.model_size]
+        self.grid = out_grid
+        self.grid_size = math.prod(self.grid)
+        self.out_channels = out_channels
         
-        self.decoder_embed = nn.Linear(self.token_size, self.width, bias=True)
-        
+
+        self.width, self.num_layers, self.num_heads, mlp_ratio = get_model_dims(model_size)
         scale = self.width ** -0.5
 
         self.mask_tokens = nn.Parameter(scale * torch.randn(self.grid_size, self.width)) # doesn't need pos emb
-
         self.latent_token_positional_embedding = nn.Parameter(scale * torch.randn(self.num_latent_tokens, self.width))
-                
+
+        self.proj_in = nn.Linear(self.token_size, self.width, bias=True)
         self.ln_pre = nn.LayerNorm(self.width)
 
+        #############################
         self.model_layers = nn.ModuleList()
-
-        #############################
         for i in range(self.num_layers):
-            self.model_layers.append(ResidualAttentionBlock(d_model=self.width, n_head=self.num_heads, exp_res=model_config.exp_residual))
+            self.model_layers.append(ResidualAttentionBlock(d_model=self.width, n_head=self.num_heads, mlp_ratio=mlp_ratio))
         #############################
 
-        channel_depth = self.out_channels * self.temporal_patch_size * self.spatial_patch_size ** 2
+        self.proj_out = nn.Linear(self.width, self.out_channels, bias=True)
 
-        self.conv_out = nn.Sequential(
-            nn.Conv3d(in_channels=self.width, out_channels=channel_depth, kernel_size=1, padding=0, bias=True),
-            Rearrange('b (p1 p2 p3 c) t h w -> b c (t p1) (h p2) (w p3)',
-                p1 = self.temporal_patch_size, p2 = self.spatial_patch_size, p3 = self.spatial_patch_size),
-            nn.Conv3d(self.out_channels, self.out_channels, kernel_size=3, padding=1, bias=True), # set padding to (kernel_size-1)//2
-        )
-
-        
-    def forward(self, z_quantized):
-        B, L, C = z_quantized.shape
-        assert L == self.num_latent_tokens, f"{L}, {self.num_latent_tokens}"
-        x = z_quantized
-
-        x = self.decoder_embed(x)
-
+    def forward(self, x):
+        x = self.proj_in(x)
         mask_tokens = _expand_token(self.mask_tokens, x.shape[0]).to(x.dtype)
         
         x = x + self.latent_token_positional_embedding
-        x = torch.cat([mask_tokens, x], dim=1)
-        
+        x = torch.cat([mask_tokens, x], dim=1).contiguous()
         x = self.ln_pre(x)
 
         for i in range(len(self.model_layers)):
             x = self.model_layers[i](x)
 
         x = x[:, :self.grid_size]
-        
-        x = x.permute(0, 2, 1).reshape(
-            B,
-            self.width,
-            self.temporal_size // self.temporal_patch_size,
-            self.spatial_size // self.spatial_patch_size,
-            self.spatial_size // self.spatial_patch_size
-        )
-
-        x = self.conv_out(x.contiguous())
+        x = self.proj_out(x)
+        x = x.permute(0, 2, 1).reshape([x.shape[0], self.out_channels] + self.grid) # BLC -> BCL -> BCTHW
         return x

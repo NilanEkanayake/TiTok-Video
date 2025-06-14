@@ -25,7 +25,7 @@ class CodebookLogger(nn.Module):
             freq_np = code_frequencies.float().numpy()
             codebook_dict = {
                 'codebook/usage_percent': (code_frequencies.count_nonzero() / self.codebook_size) * 100,
-                'codebook/entropy': entropy(freq_np / freq_np.sum())
+                'codebook/entropy': entropy(freq_np /freq_np.sum())
             }
 
             self.codebook_indices = []

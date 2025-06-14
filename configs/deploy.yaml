@@ -1,0 +1,113 @@
+general:
+    wandb:
+        project: pixel_titok_video_9
+        run_name: sub4LPIPS-BS8-16f-TL512-10kWarm
+        log_step_interval: 50
+
+    checkpoints:
+        save_path: out_ckpt
+        save_interval: 1000
+        keep_prior: 2 # -1 to keep all
+
+        resume_from_checkpoint:
+        init_from_checkpoint:
+
+model:
+    resnaf:
+        temporal_patch_size: 4
+        spatial_patch_size: 8
+
+        sep_layers: 2
+        fusion_layers: 2
+
+        low_dims: 128
+        high_dims: 384
+
+    titok:
+        encoder_size: small_thin # small
+        decoder_size: small_thin
+
+        num_latent_tokens: 512
+        fsq_levels: [7, 7, 7, 5, 5] # CB size: 8575
+
+    disc: # not ready yet
+        temporal_patch_size: 4
+        spatial_patch_size: 8
+
+        model_size: tiny_thin
+
+losses:
+    recon:
+        dwt_weight: 0.1
+        perceptual_weight: 1.0
+        perceptual_subsample: 4 # calculate lpips score from lpips_subsample frames in each clip. Use -1 to sample all.
+
+    disc: # not ready yet
+        use_disc: False
+        freeze_encoder: False
+
+        disc_start: 294000
+        disc_weight: 0.4
+        disc_weight_warmup_steps: 1 # 20000
+
+        every_n: 7 # num encoder steps between discriminator steps
+        base_gamma: 500.0
+        final_gamma: 50.0
+
+dataset:
+    train_dataset: "hf://datasets/NilanE/Vchitect_T2V_DataVerse_256p_8fps_wds/shards/*.tar"
+    eval_dataset: "eval_dataset/03.tar" # "hf://datasets/facebook/PE-Video/test/*.tar"
+    resolution: 128
+    num_frames: 16
+    frames_per_second: 8
+    workers: 4
+    pin_memory: False # uses extra VRAM when enabled.
+
+    chunk_type: random_multi # random_multi, random_single
+    max_chunks: 20 # avoid OOM
+
+optimizer:
+    titok:
+        learning_rate: 5e-5
+        beta1: 0.9
+        beta2: 0.99
+        weight_decay: 1e-4
+        warmup_steps: 10000
+        end_lr: 1e-5
+
+    disc:
+        learning_rate: 1e-6 # See https://arxiv.org/pdf/2501.09755
+        beta1: 0.9
+        beta2: 0.99
+        weight_decay: 1e-4
+        warmup_steps: 0 # 20000
+        end_lr: 2e-7
+
+training:
+    main:
+        max_steps: 600000
+        batch_size: 32
+        precision: bf16-mixed
+        accelerator: 'gpu'
+        train_devices: 1
+        enable_tf32: True
+        torch_compile: False # True?
+
+        seed: 42
+        max_grad_norm: 1.0
+
+    eval:
+        eval_step_interval: 1000
+        num_eval: 128
+        batch_size: 8
+
+        log_codebook: True
+        log_jedi: True
+        log_fvd: True
+        log_recon_num: 4
+
+        random_recon: False # whether to sample recon videos randomly from the eval set, or take the first log_recon_num
+        jedi_jepa_model: vit_large # vit_huge
+
+        clear_cache: True
+        offload_metrics: True

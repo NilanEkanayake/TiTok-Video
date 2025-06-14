@@ -15,64 +15,112 @@ See the License for the specific language governing permissions and
 limitations under the License.
 """
 import torch.nn as nn
-import json
-from omegaconf import OmegaConf
-from pathlib import Path
 from model.base.blocks import TiTokEncoder, TiTokDecoder
+from model.base.leanVAE import ResNAFEncoder, ResNAFDecoder
+from model.base.patcher_utils import Patcher, UnPatcher # DWT
 from model.quantizer.fsq import FSQ
-from huggingface_hub import PyTorchModelHubMixin
 
-class TiTok(nn.Module, PyTorchModelHubMixin, tags=["arxiv:2304.12244", "video-tokenization"], license="mit"):
+class TiTok(nn.Module):
     def __init__(self, config):
         super().__init__()
         self.config = config
         
-        model_config = config.model.titok
-        self.quantize = FSQ(levels=model_config.fsq_levels)
-        token_size_enc = len(model_config.fsq_levels)
-        token_size_dec = len(model_config.fsq_levels)
-        
-        self.encoder = TiTokEncoder(model_config, config.dataset, token_size_enc)
-        self.decoder = TiTokDecoder(model_config, config.dataset, token_size_dec)
-                
+        resnaf_conf = config.model.resnaf
+        titok_conf = config.model.titok
+
+        self.grid = [ # THW
+            config.dataset.num_frames,
+            config.dataset.resolution,
+            config.dataset.resolution,
+        ]
+
+        self.patch_size = [
+            resnaf_conf.temporal_patch_size,
+            resnaf_conf.spatial_patch_size,
+            resnaf_conf.spatial_patch_size,
+        ]
+
+        assert all(x % 2 == 0 for x in self.patch_size), "patch sizes must be multiple of two"
+        assert all(x % y == 0 for x, y in zip(self.grid, self.patch_size)), "input dimensions should be evenly divisible by respective patch sizes"
+
+        sep_layers = resnaf_conf.sep_layers
+        fusion_layers = resnaf_conf.fusion_layers
+        l_dim = resnaf_conf.low_dims
+        h_dim = resnaf_conf.high_dims
+
+        token_size = len(titok_conf.fsq_levels)
+        titok_grid = [x//y for x, y in zip(self.grid, self.patch_size)]
+
+        self.dwt = Patcher()
+        self.pre_encoder = ResNAFEncoder(
+            sep_layers,
+            fusion_layers,
+            [x//2 for x in self.patch_size], # initial /2 already done by DWT.
+            l_dim,
+            h_dim
+        )
+        self.encoder = TiTokEncoder(
+            model_size=titok_conf.encoder_size,
+            in_grid=titok_grid,
+            in_channels=l_dim+h_dim,
+            out_tokens=titok_conf.num_latent_tokens,
+            out_channels=token_size,
+        )
+        self.quantize = FSQ(levels=titok_conf.fsq_levels)
+        self.decoder = TiTokDecoder(
+            model_size=titok_conf.decoder_size,
+            in_tokens=titok_conf.num_latent_tokens,
+            in_channels=token_size,
+            out_grid=titok_grid,
+            out_channels=l_dim+h_dim,
+        )
+        self.post_decoder = ResNAFDecoder(
+            sep_layers,
+            fusion_layers,
+            [x//2 for x in self.patch_size],
+            l_dim,
+            h_dim
+        )
+        self.idwt = UnPatcher()
+
         self.apply(self._init_weights)
-        
-    def _save_pretrained(self, save_directory: Path) -> None:
-        """Save weights and config to a local directory."""
-        # Assume 'self.config' is your DictConfig object
-        # Convert to a regular dictionary
-        dict_config = OmegaConf.to_container(self.config)
-        # Save as JSON
-        file_path = Path(save_directory) / "config.json"
-        with open(file_path, 'w') as json_file:
-            json.dump(dict_config, json_file, indent=4)
-        super()._save_pretrained(save_directory)
 
     def _init_weights(self, module):
-        """ Initialize the weights.
-            :param:
-                module -> torch.nn.Module: module to initialize
-        """
-        if isinstance(module, nn.Linear) or isinstance(module, nn.Conv1d) or isinstance(module, nn.Conv3d) or isinstance(module, nn.ConvTranspose3d):
+        if isinstance(module, nn.Linear):
             module.weight.data = nn.init.trunc_normal_(module.weight.data, mean=0.0, std=0.02)
             if module.bias is not None:
-                module.bias.data.zero_()
-        elif isinstance(module, nn.Embedding):
-            module.weight.data = nn.init.trunc_normal_(module.weight.data, mean=0.0, std=0.02)
+                nn.init.constant_(module.bias, 0)
         elif isinstance(module, nn.LayerNorm):
-            module.bias.data.zero_()
-            module.weight.data.fill_(1.0)
+            if module.bias is not None:
+                nn.init.constant_(module.bias, 0)
+            if module.weight is not None:
+                nn.init.constant_(module.weight, 1.0)
+
+        elif isinstance(module, nn.Conv3d) or isinstance(module, nn.Conv2d):
+            nn.init.xavier_uniform_(module.weight)
+            nn.init.zeros_(module.bias)
+
 
     def encode(self, x):
-        z = self.encoder(x)
-        z, z_dict = self.quantize(z.contiguous())
-        return z, z_dict
+        x = x/2 # [-1, 1] -> [-0.5, 0.5] needed?
+        x_dwt = self.dwt(x)
+        x = self.pre_encoder(x_dwt)
+        x = self.encoder(x)
+        x_q, x_dict = self.quantize(x)
+        return x_q, x_dwt, x_dict
     
-    def decode(self, z):
-        decoded = self.decoder(z)
-        return decoded
+    def decode(self, x):
+        x = self.decoder(x)
+        x_dwt = self.post_decoder(x)
+        x = self.idwt(x_dwt)
+        x = x*2 # needed?
+        return x, x_dwt
     
     def forward(self, x):
-        z, result_dict = self.encode(x)
-        decoded = self.decode(z)
-        return decoded, result_dict
+        x, target_dwt, out_dict = self.encode(x)        
+        x, recon_dwt = self.decode(x)
+
+        out_dict['target_dwt'] = target_dwt
+        out_dict['recon_dwt'] = recon_dwt
+
+        return x, out_dict

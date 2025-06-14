@@ -28,10 +28,16 @@ def convert_shards(shard_paths):
 
     return out_paths
 
-def video_process(data, trg_fps, trg_frames, trg_res, out_dtype=torch.bfloat16, eval=False):
+def video_process(data, trg_fps, trg_frames, trg_res, out_dtype=torch.bfloat16, chunk_type='random_multi', max_chunks=20, eval=False):
     for sample in data:
         # for tars made with webdataset's tarwriter, the video key should be 'mp4' and there should also be a __key__ containing a unique id.
         # for tars that are compressed using something like 7zip, the key is read as the file path, eg '/videos/abc.mp4' and there won't be a __key__?
+
+        # setting a lower max_chunks avoids OOMs on long clips, but caps the number of chunks extracted per video.
+
+        # chunk types:
+        # random_single -> start from a random index and take a single chunk per video input
+        # random_multi -> start from a random index and take multiple sequential chunks per video input. Index chosen is constrained by the 'buffer' of unused frames in a video.
         for video_key in sample.keys():
             if video_key == 'mp4' or video_key.endswith('.mp4'): # allow paths in mp4 key
                 try:
@@ -56,16 +62,31 @@ def video_process(data, trg_fps, trg_frames, trg_res, out_dtype=torch.bfloat16, 
                         vr = VideoReader(video_bytes, ctx=cpu(0), num_threads=0) # auto threading
                         fps = vr.get_avg_fps()
                         vid_dims = vr[0].shape
-                        if len(vr) > trg_frames and min(vid_dims[0], vid_dims[1]) >= trg_res and fps >= trg_fps:
+                        num_input_frames = len(vr)
+                        if num_input_frames > trg_frames and min(vid_dims[0], vid_dims[1]) >= trg_res and fps >= trg_fps:
                             frame_interval = fps / trg_fps
                             orig_fps_chunk_length = int(trg_frames * frame_interval)
-                            num_chunks = len(vr) // orig_fps_chunk_length
+                            num_chunks = num_input_frames // orig_fps_chunk_length
 
-                            if eval and num_chunks > 1:
-                                num_chunks = 1 # take one clip per video for eval.
+                            start_offset = 0
+                            num_chunks = min(num_chunks, max_chunks)
+
+                            if not eval:
+                                max_start_idx = 0
+                                if chunk_type == 'random_single':
+                                    num_chunks = 1
+                                    max_start_idx = num_input_frames - orig_fps_chunk_length
+                                elif chunk_type == 'random_multi':
+                                    max_start_idx = num_input_frames - (num_chunks * orig_fps_chunk_length)
+
+                                if max_start_idx > 0:
+                                    start_offset = np.random.randint(0, max_start_idx)
+                            else:
+                                # num_chunks = 1 # 1 chunk per video for eval diversity
+                                pass
                                 
                             for i in range(num_chunks):
-                                start_idx = i * orig_fps_chunk_length
+                                start_idx = (i * orig_fps_chunk_length) + start_offset
                                 end_idx = start_idx + orig_fps_chunk_length
 
                                 chunk_indices = np.linspace(start_idx, end_idx - 1, trg_frames, dtype=int).tolist()
@@ -93,10 +114,13 @@ class WebdatasetVideoDataModule(pl.LightningModule):
         trg_fps=config.dataset.frames_per_second
         trg_frames=config.dataset.num_frames
 
-        train_batch_size=config.training.batch_size
-        eval_batch_size=config.training.eval_batch_size
+        chunk_type=config.dataset.chunk_type
+        max_chunks=config.dataset.max_chunks
 
-        self.eval_samples=config.training.eval_sample_size
+        train_batch_size=config.training.main.batch_size
+        eval_batch_size=config.training.eval.batch_size
+
+        self.eval_samples=config.training.eval.num_eval
         self.num_workers=config.dataset.workers
 
         self.pin_memory = config.dataset.pin_memory
@@ -108,17 +132,17 @@ class WebdatasetVideoDataModule(pl.LightningModule):
             'bf16': torch.bfloat16,
         }
 
-        if config.training.precision == 'transformer-engine':
+        if config.training.main.precision == 'transformer-engine':
             out_dtype = torch.bfloat16 # will work?
         else:
-            out_dtype = dtypes[config.training.precision.split('-')[0]]
+            out_dtype = dtypes[config.training.main.precision.split('-')[0]]
 
         train_pipeline = [
             wds.ResampledShards(convert_shards(train_shard_path)), # no handler?
             wds.split_by_worker, # no overlapping entries between workers
             wds.tarfile_to_samples(handler=wds.warn_and_continue),
             wds.shuffle(8, handler=wds.warn_and_continue),
-            lambda data: video_process(data, trg_fps, trg_frames, trg_res, out_dtype),
+            lambda data: video_process(data, trg_fps, trg_frames, trg_res, out_dtype, chunk_type, max_chunks, eval=False),
             wds.shuffle(64, handler=wds.warn_and_continue),
             wds.batched(train_batch_size, partial=False, collation_fn=default_collate),
         ]
@@ -127,7 +151,7 @@ class WebdatasetVideoDataModule(pl.LightningModule):
             wds.SimpleShardList(convert_shards(eval_shard_path)),
             wds.split_by_worker,
             wds.tarfile_to_samples(handler=wds.warn_and_continue),
-            lambda data: video_process(data, trg_fps, trg_frames, trg_res, out_dtype, eval=True),
+            lambda data: video_process(data, trg_fps, trg_frames, trg_res, out_dtype, chunk_type, max_chunks, eval=True),
             wds.batched(eval_batch_size, partial=False, collation_fn=default_collate),
         ]
         

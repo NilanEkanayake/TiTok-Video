@@ -2,179 +2,174 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from einops import rearrange
+import numpy as np
 
 from model.discriminator.vit_disc import ViTDiscriminator
+from model.discriminator.n_layer import NLayerDiscriminatorSpectral, NLayerDiscriminatorSpectral3D, weights_init
 
-def lecam_reg(real_pred, fake_pred, lecam_ema):
-    reg = torch.mean(F.relu(real_pred - lecam_ema.logits_fake_ema).pow(2)) + torch.mean(
-        F.relu(lecam_ema.logits_real_ema - fake_pred).pow(2)
-    )
-    return reg
+from model.metrics.lpips import LPIPS
 
-class LeCAM_EMA(object):
-    # https://github.com/TencentARC/SEED-Voken/blob/main/src/Open_MAGVIT2/modules/losses/vqperceptual.py
-    def __init__(self, init=0.0, decay=0.999):
-        self.logits_real_ema = init
-        self.logits_fake_ema = init
-        self.decay = decay
+def zero_centered_grad_penalty(samples, critics):
+    """Modified from https://github.com/brownvc/R3GAN"""
+    gradient, = torch.autograd.grad(outputs=critics.sum(), inputs=samples, create_graph=True)
+    return gradient.square().sum([1, 2, 3, 4])
 
-    def update(self, logits_real, logits_fake):
-        self.logits_real_ema = self.logits_real_ema * self.decay + torch.mean(logits_real).item() * (1 - self.decay)
-        self.logits_fake_ema = self.logits_fake_ema * self.decay + torch.mean(logits_fake).item() * (1 - self.decay)
-
+def l1(x, y):
+    return torch.abs(x - y)
     
 class ReconstructionLoss(nn.Module):
-    def __init__(self, config, lpips):
+    def __init__(self, config):
         super().__init__()
         self.config = config
         
-        cd = config.model.disc
+        cd = config.losses.disc
         self.use_disc = cd.use_disc
 
-        self.lpips = lpips
-        self.lpips_weight = config.model.titok.lpips_weight
+        self.perceptual_weight = config.losses.recon.perceptual_weight
+        if self.perceptual_weight > 0.0:
+            self.perceptual_model = LPIPS().eval()
+            for param in self.perceptual_model.parameters():
+                param.requires_grad = False
+
+        self.dwt_weight = config.losses.recon.dwt_weight
+
+        cd = config.losses.disc
+        self.disc_weight = cd.disc_weight
+        self.disc_start = cd.disc_start
 
         if self.use_disc:
-            cd = config.model.disc
-            self.disc_start = cd.disc_start
-            self.disc_factor = cd.disc_factor
-            self.disc_weight = cd.disc_weight
-
             self.disc_model = ViTDiscriminator(
                 model_size=cd.model_size,
-                in_channels=3*2, # RGB * 2 for concat
+                in_channels=3,
                 in_spatial_size=config.dataset.resolution,
                 in_temporal_size=config.dataset.num_frames,
                 spatial_patch_size=cd.spatial_patch_size,
                 temporal_patch_size=cd.temporal_patch_size,
+                out_tokens=1,
             )
 
-            if config.training.torch_compile:
-                torch._dynamo.config.compiled_autograd = True
+            # self.disc_model = NLayerDiscriminatorSpectral3D(input_nc=3, output_nc=1).apply(weights_init)
+
+            if config.training.main.torch_compile:
                 self.disc_model = torch.compile(self.disc_model)
-            
-            self.lecam_weight = cd.lecam_weight
-            if self.lecam_weight > 0:
-                self.lecam_ema = LeCAM_EMA()
 
-        self.total_steps = config.training.max_steps
-        self.mse_loss = nn.MSELoss(reduction="mean")
+            self.base_gamma = cd.base_gamma
+            self.final_gamma = cd.final_gamma
+
+        self.total_steps = config.training.main.max_steps
     
-    def calculate_adaptive_weight(self, nll_loss, g_loss, last_layer=None):
-        if last_layer is not None:
-            nll_grads = torch.autograd.grad(nll_loss, last_layer, retain_graph=True)[0]
-            g_grads = torch.autograd.grad(g_loss, last_layer, retain_graph=True)[0]
-        else:
-            nll_grads = torch.autograd.grad(nll_loss, self.last_layer[0], retain_graph=True)[0]
-            g_grads = torch.autograd.grad(g_loss, self.last_layer[0], retain_graph=True)[0]
+    def cosine_decay(self, global_step):
+        decay = 0.5 * (1 + np.cos(np.pi * global_step / self.total_steps))
+        cur_value = self.base_gamma + (1 - decay) * (self.final_gamma - self.base_gamma)
+        return float(np.where(global_step > self.total_steps, self.final_gamma, cur_value))
 
-        d_weight = torch.norm(nll_grads) / (torch.norm(g_grads) + 1e-4)
-        d_weight = torch.clamp(d_weight, 0.0, 1e4).detach()
-        d_weight = d_weight * self.disc_weight
-        return d_weight
-
-    def forward(self, target, recon, global_step, last_layer=None, results_dict=None, disc_forward=False):
+    def forward(self, target, recon, global_step, results_dict=None, disc_forward=False):
         if disc_forward:
             return self._forward_discriminator(target, recon, global_step)
         else:
-            return self._forward_generator(target, recon, global_step, last_layer, results_dict)
+            return self._forward_generator(target, recon, global_step, results_dict)
 
-    def _forward_generator(self, target, recon, global_step, last_layer=None, results_dict=None):
+    def _forward_generator(self, target, recon, global_step, results_dict=None):
         loss_dict = {}
         target = target.contiguous()
         recon = recon.contiguous()
 
-        recon_loss = self.mse_loss(rearrange(recon, "b c t h w -> (b t) c h w"), rearrange(target, "b c t h w -> (b t) c h w"))
-        loss_dict['recon_loss'] = recon_loss.clone().detach()
+        B, C, T, H, W = target.shape
 
-        lpips_loss = 0.0
-        num_subsample = self.config.model.titok.lpips_subsample
-        if self.lpips_weight > 0.0:
+        recon_loss = l1(rearrange(target, "b c t h w -> (b t) c h w"), rearrange(recon, "b c t h w -> (b t) c h w")).view(B, -1).mean(1) # [B]
+        loss_dict['recon_loss'] = recon_loss
+
+        perceptual_loss = 0.0
+        if self.perceptual_weight > 0.0:
+            num_subsample = self.config.losses.recon.perceptual_subsample
             if num_subsample != -1:
-                B, C, T, H, W = target.shape
                 batch_indices = torch.arange(B, device=target.device).repeat_interleave(num_subsample)
                 random_frames = torch.randint(0, T, (B * num_subsample,), device=target.device)
 
                 recon_sampled = recon[batch_indices, :, random_frames, :, :]
                 target_sampled = target[batch_indices, :, random_frames, :, :]
-                lpips_loss = self.lpips(recon_sampled.clamp(-1, 1), target_sampled).mean()
+                perceptual_loss = self.perceptual_model(recon_sampled.clamp(-1, 1).contiguous(), target_sampled.contiguous()).view(B, -1).mean(1) # [B]
             else:
-                lpips_loss = self.lpips(rearrange(recon.clamp(-1, 1), "b c t h w -> (b t) c h w"), rearrange(target, "b c t h w -> (b t) c h w")).mean()
-            loss_dict['lpips_loss'] = lpips_loss.clone().detach()
+                rec_frames = rearrange(recon.clamp(-1, 1), 'b c t h w -> (b t) c h w').contiguous()
+                trg_frames = rearrange(target, 'b c t h w -> (b t) c h w').contiguous()
+                perceptual_loss = self.perceptual_model(rec_frames, trg_frames).view(B, -1).mean(1) # [B]
+
+            loss_dict['perceptual_loss'] = perceptual_loss
+
+        # dwt
+        dwt_loss = 0.0
+        if self.dwt_weight > 0.0:
+            target_dwt = results_dict['target_dwt'].contiguous()
+            recon_dwt = results_dict['recon_dwt'].contiguous()
+            recon_loss_low = l1(recon_dwt[:, :3], target_dwt[:, :3]).view(B, -1).mean(1) * 0.5 # [B]
+            recon_loss_high = l1(recon_dwt[:, 3:], target_dwt[:, 3:]).view(B, -1).mean(1)
+            dwt_loss = recon_loss_low + recon_loss_high
+            loss_dict['dwt_loss'] = dwt_loss
 
         # adversarial loss
-        disc_factor = 0.0
-        d_weight = 0.0
+        d_weight = self.disc_weight
+        d_weight_warm = min(1.0, ((global_step - self.disc_start) / self.config.losses.disc.disc_weight_warmup_steps))
         g_loss = 0.0
         if self.use_disc and global_step > self.disc_start:
-            g_loss = torch.zeros((), device=target.device)
-            logits_relative = torch.zeros((), device=target.device)
-            disc_factor = self.disc_factor
-            d_weight = self.disc_weight
+            target = target.detach().contiguous()
 
             ############################
             for param in self.disc_model.parameters():
                 param.requires_grad = False
             ############################
 
-            logits_real = self.disc_model(torch.cat((target, recon), dim=1))
-            logits_fake = self.disc_model(torch.cat((recon, target), dim=1))
-            logits_relative = logits_fake - logits_real
-            g_loss = F.softplus(-logits_relative).mean()
+            logits_real = self.disc_model(target).view(B, -1).mean(1) # [B]
+            logits_fake = self.disc_model(recon).view(B, -1).mean(1)
 
-            # adaptive disc weight
-            if self.training and self.config.model.disc.adapt_disc_weight:
-                d_weight = self.calculate_adaptive_weight(recon_loss, g_loss, last_layer=last_layer)
-                loss_dict['d_weight'] = d_weight.clone().detach()
+            logits_relative = logits_fake - logits_real
+            g_loss = F.softplus(-logits_relative)
 
             ######################
-            loss_dict['gan_loss'] = g_loss.clone().detach()
-            loss_dict['logits_relative'] = logits_relative.detach().mean()
-
+            loss_dict['gan_loss'] = g_loss
+            loss_dict['logits_relative'] = logits_relative
 
         total_loss = (
-            recon_loss 
-            + (d_weight * disc_factor * g_loss) 
-            + (self.lpips_weight * lpips_loss) 
-        )
+            recon_loss
+            + (self.perceptual_weight * perceptual_loss)
+            + (d_weight * d_weight_warm * g_loss)
+            + (self.dwt_weight * dwt_loss)
+        ).mean()
 
-        loss_dict['total_loss'] = total_loss.clone().detach()
+        loss_dict['total_loss'] = total_loss
             
-        return total_loss, {'train/'+k:v for k,v in loss_dict.items()}
+        return total_loss, {'train/'+k:v.clone().mean().detach() for k,v in loss_dict.items()}
     
     def _forward_discriminator(self, target, recon, global_step):
         loss_dict = {}
         
-        target = target.requires_grad_(True).contiguous()
+        target = target.detach().requires_grad_(True).contiguous()
         recon = recon.detach().requires_grad_(True).contiguous()
-        # target = target.contiguous()
-        # recon = recon.detach().contiguous()
+
+        B, C, T, H, W = target.shape
 
         ############################
         for param in self.disc_model.parameters():
             param.requires_grad = True
         ############################
 
-        # Recon GAN. See https://arxiv.org/abs/2501.00103 section 2.1.2
-        logits_real = self.disc_model(torch.cat((target, recon), dim=1)) # channel concat for n-layer
-        logits_fake = self.disc_model(torch.cat((recon, target), dim=1))
+        logits_real = self.disc_model(target).view(B, -1).mean(1)
+        logits_fake = self.disc_model(recon).view(B, -1).mean(1)
 
-        # https://github.com/AilsaF/RS-GAN and https://github.com/brownvc/R3GAN 
+        # https://github.com/brownvc/R3GAN
+        r1_penalty = zero_centered_grad_penalty(target, logits_real)
+        r2_penalty = zero_centered_grad_penalty(recon, logits_fake)
+ 
         logits_relative = logits_real - logits_fake
-        adv_loss = F.softplus(-logits_relative).mean()
-
-        if self.lecam_weight > 0:
-            self.lecam_ema.update(logits_real, logits_fake)
-            lecam_loss = lecam_reg(logits_real, logits_fake, self.lecam_ema)
-            disc_loss = self.disc_factor * (lecam_loss * self.lecam_weight + adv_loss)
-            loss_dict["lecam_loss"] = lecam_loss.clone().detach()
-        else:
-            disc_loss = self.disc_factor * adv_loss
+        
+        gamma = self.cosine_decay(global_step)
+        disc_loss = (F.softplus(-logits_relative) + (gamma / 2) * (r1_penalty + r2_penalty)).mean()
         
         loss_dict.update({
-            "disc_loss": disc_loss.detach(),
-            "logits_real": logits_real.detach().mean(),
-            "logits_fake": logits_fake.detach().mean(),
+            "disc_loss": disc_loss,
+            "logits_real": logits_real,
+            "logits_fake": logits_fake,
+            "r1_penalty": r1_penalty,
+            "r2_penalty": r2_penalty,
         })
             
-        return disc_loss, {'train/'+k:v for k,v in loss_dict.items()}
+        return disc_loss, {'train/'+k:v.clone().mean().detach() for k,v in loss_dict.items()}
