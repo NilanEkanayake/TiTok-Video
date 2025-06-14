@@ -27,7 +27,7 @@ class FVDCalculator(nn.Module):
     def __init__(self):
         super().__init__()
         detector_url = 'https://www.dropbox.com/s/ge9e5ujwgetktms/i3d_torchscript.pt?dl=1'
-        ocal_file_path = 'model/metrics/i3d_torchscript.pt'
+        local_file_path = 'model/metrics/i3d_torchscript.pt'
         #Download URL
         if not os.path.exists(local_file_path): # no md5 check?
             download(detector_url, local_file_path)
