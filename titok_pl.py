@@ -138,7 +138,7 @@ class TitokTrainer(L.LightningModule):
                 merged_video = torch.cat((y, x), dim=-1).permute(1, 0, 2, 3).cpu().float().numpy() # tch(W) concat
                 merged_video = ((merged_video + 1) / 2 * 255).astype(np.uint8)
                 self.seen_recon += 1
-                self.logger.log_video(key=f"Video recon {self.seen_recon}", videos=[merged_video], step=self.global_step, fps=[self.config.dataset.frames_per_second])
+                self.logger.log_video(key=f"Video recon {self.seen_recon}", videos=[merged_video], step=self.global_step, fps=[self.config.dataset.frames_per_second], format=['mp4'])
             self.seen_eval += 1
 
 
