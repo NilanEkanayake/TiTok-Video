@@ -4,6 +4,7 @@ huggingface_hub
 lightning
 numpy
 omegaconf
+scikit-learn
 scipy
 torch>=2.4.0
 torchmetrics
