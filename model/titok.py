@@ -16,53 +16,43 @@ limitations under the License.
 """
 import torch.nn as nn
 from model.base.blocks import TiTokEncoder, TiTokDecoder
-from model.base.leanVAE import ResNAFEncoder, ResNAFDecoder
 from model.base.patcher_utils import Patcher, UnPatcher # DWT
 from model.quantizer.fsq import FSQ
+
+from einops.layers.torch import Rearrange
 
 class TiTok(nn.Module):
     def __init__(self, config):
         super().__init__()
         self.config = config
         
-        resnaf_conf = config.model.resnaf
         titok_conf = config.model.titok
+        ds_conf = config.dataset
 
         self.grid = [ # THW
-            config.dataset.num_frames,
-            config.dataset.resolution,
-            config.dataset.resolution,
+            ds_conf.num_frames,
+            ds_conf.resolution,
+            ds_conf.resolution,
         ]
 
         self.patch_size = [
-            resnaf_conf.temporal_patch_size,
-            resnaf_conf.spatial_patch_size,
-            resnaf_conf.spatial_patch_size,
+            titok_conf.temporal_patch_size,
+            titok_conf.spatial_patch_size,
+            titok_conf.spatial_patch_size,
         ]
 
         assert all(x % 2 == 0 for x in self.patch_size), "patch sizes must be multiple of two"
         assert all(x % y == 0 for x, y in zip(self.grid, self.patch_size)), "input dimensions should be evenly divisible by respective patch sizes"
 
-        sep_layers = resnaf_conf.sep_layers
-        fusion_layers = resnaf_conf.fusion_layers
-        l_dim = resnaf_conf.low_dims
-        h_dim = resnaf_conf.high_dims
-
         token_size = len(titok_conf.fsq_levels)
-        titok_grid = [x//y for x, y in zip(self.grid, self.patch_size)]
 
         self.dwt = Patcher()
-        self.pre_encoder = ResNAFEncoder(
-            sep_layers,
-            fusion_layers,
-            [x//2 for x in self.patch_size], # initial /2 already done by DWT.
-            l_dim,
-            h_dim
-        )
+
         self.encoder = TiTokEncoder(
             model_size=titok_conf.encoder_size,
-            in_grid=titok_grid,
-            in_channels=l_dim+h_dim,
+            in_grid=[x//2 for x in self.grid], # initial /2 done by DWT
+            in_channels=3*8,
+            patch_size=[x//2 for x in self.patch_size],
             out_tokens=titok_conf.num_latent_tokens,
             out_channels=token_size,
         )
@@ -71,16 +61,11 @@ class TiTok(nn.Module):
             model_size=titok_conf.decoder_size,
             in_tokens=titok_conf.num_latent_tokens,
             in_channels=token_size,
-            out_grid=titok_grid,
-            out_channels=l_dim+h_dim,
+            patch_size=[x//2 for x in self.patch_size],
+            out_grid=[x//2 for x in self.grid],
+            out_channels=3*8,
         )
-        self.post_decoder = ResNAFDecoder(
-            sep_layers,
-            fusion_layers,
-            [x//2 for x in self.patch_size],
-            l_dim,
-            h_dim
-        )
+
         self.idwt = UnPatcher()
 
         self.apply(self._init_weights)
@@ -104,21 +89,19 @@ class TiTok(nn.Module):
     def encode(self, x):
         x = x/2 # [-1, 1] -> [-0.5, 0.5] needed?
         x_dwt = self.dwt(x)
-        x = self.pre_encoder(x_dwt)
-        x = self.encoder(x)
+        x = self.encoder(x_dwt)
         x_q, x_dict = self.quantize(x)
         return x_q, x_dwt, x_dict
     
     def decode(self, x):
-        x = self.decoder(x)
-        x_dwt = self.post_decoder(x)
+        x_dwt = self.decoder(x)
         x = self.idwt(x_dwt)
         x = x*2 # needed?
         return x, x_dwt
     
     def forward(self, x):
-        x, target_dwt, out_dict = self.encode(x)        
-        x, recon_dwt = self.decode(x)
+        x_q, target_dwt, out_dict = self.encode(x)        
+        x, recon_dwt = self.decode(x_q)
 
         out_dict['target_dwt'] = target_dwt
         out_dict['recon_dwt'] = recon_dwt

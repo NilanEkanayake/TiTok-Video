@@ -13,34 +13,27 @@ general:
         init_from_checkpoint:
 
 model:
-    resnaf:
+    titok:
         temporal_patch_size: 4
         spatial_patch_size: 8
 
-        sep_layers: 2
-        fusion_layers: 2
-
-        low_dims: 128
-        high_dims: 384
-
-    titok:
-        encoder_size: small_thin # small
+        encoder_size: small_thin
         decoder_size: small_thin
 
         num_latent_tokens: 512
         fsq_levels: [7, 7, 7, 5, 5] # CB size: 8575
 
-    disc: # not ready yet
+    disc:
         temporal_patch_size: 4
         spatial_patch_size: 8
 
-        model_size: tiny_thin
+        model_size: tiny_thin # tiny
 
 losses:
     recon:
         dwt_weight: 0.1
         perceptual_weight: 1.0
-        perceptual_subsample: 4 # calculate lpips score from lpips_subsample frames in each clip. Use -1 to sample all.
+        perceptual_subsample: 3 # calculate lpips score from lpips_subsample frames in each clip. Use -1 to sample all.
 
     disc: # not ready yet
         use_disc: False
@@ -56,7 +49,7 @@ losses:
 
 dataset:
     train_dataset: "hf://datasets/NilanE/Vchitect_T2V_DataVerse_256p_8fps_wds/shards/*.tar"
-    eval_dataset: "eval_dataset/03.tar" # "hf://datasets/facebook/PE-Video/test/*.tar"
+    eval_dataset: "03.tar" # "hf://datasets/facebook/PE-Video/test/*.tar"
     resolution: 128
     num_frames: 16
     frames_per_second: 8

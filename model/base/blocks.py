@@ -20,10 +20,12 @@ Reference:
 """
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from model.base.transformer import ResidualAttentionBlock
 
 from einops.layers.torch import Rearrange
 import math
+    
 
 def _expand_token(token, batch_size: int):
     return token.unsqueeze(0).expand(batch_size, -1, -1)
@@ -67,9 +69,10 @@ class TiTokEncoder(nn.Module):
     def __init__(
             self,
             model_size="tiny",
-            in_grid=(4, 16, 16), # THW
-            in_channels=512,
-            out_tokens=512,
+            in_grid=(8, 128, 128), # THW
+            in_channels=3,
+            patch_size=(4, 8, 8),
+            out_tokens=256,
             out_channels=5,
         ):
         super().__init__()
@@ -77,7 +80,7 @@ class TiTokEncoder(nn.Module):
         self.num_latent_tokens = out_tokens
         self.token_size = out_channels
 
-        self.grid = in_grid
+        self.grid = [x//y for x, y in zip(in_grid, patch_size)]
         self.grid_size = math.prod(self.grid)
         self.in_channels = in_channels
 
@@ -87,30 +90,26 @@ class TiTokEncoder(nn.Module):
         self.latent_tokens = nn.Parameter(scale * torch.randn(self.num_latent_tokens, self.width))
         self.positional_embedding = nn.Parameter(scale * torch.randn(self.grid_size, self.width))
 
-        self.proj_in = nn.Linear(self.in_channels, self.width, bias=True)
-        
-        #############################
-        self.model_layers = nn.ModuleList()
-        for i in range(self.num_layers):
-            self.model_layers.append(ResidualAttentionBlock(d_model=self.width, n_head=self.num_heads, mlp_ratio=mlp_ratio))
-        #############################
+        self.proj_in = nn.Sequential(
+            Rearrange('b c (nt pt) (nh ph) (nw pw) -> b (nt nh nw) (c pt ph pw)', pt=patch_size[0], ph=patch_size[1], pw=patch_size[2]),
+            nn.Linear(in_features=in_channels*math.prod(patch_size), out_features=self.width),
+        )
+
+        self.model_layers = ResidualAttentionBlock(embed_dim=self.width, num_head=self.num_heads, mlp_ratio=mlp_ratio, num_layer=self.num_layers)
 
         self.ln_post = nn.LayerNorm(self.width)
         self.proj_out = nn.Linear(self.width, self.token_size, bias=True)
 
 
     def forward(self, x):
-        x = x.reshape(x.shape[0], x.shape[1], -1) # BCTHW -> BC(THW)/BCL
-        x = x.permute(0, 2, 1) # BCL -> BLC
-        x = self.proj_in(x)
+        x = self.proj_in(x) # returns BLC
 
         x = x + self.positional_embedding.to(x.dtype)
         latent_tokens = _expand_token(self.latent_tokens, x.shape[0]).to(x.dtype)
 
         x = torch.cat([x, latent_tokens], dim=1).contiguous()
 
-        for i in range(len(self.model_layers)):
-            x = self.model_layers[i](x)
+        x = self.model_layers(x)
 
         latent_tokens = x[:, -self.num_latent_tokens:]
         latent_tokens = self.ln_post(latent_tokens)
@@ -123,17 +122,18 @@ class TiTokDecoder(nn.Module):
     def __init__(
             self,
             model_size="tiny",
-            in_tokens=512,
+            in_tokens=256,
             in_channels=5,
-            out_grid=(4, 16, 16), # THW
-            out_channels=512,
+            patch_size=(4, 8, 8),
+            out_grid=(8, 128, 128), # THW
+            out_channels=3,
         ):
         super().__init__()
 
         self.num_latent_tokens = in_tokens
         self.token_size = in_channels
 
-        self.grid = out_grid
+        self.grid = [x//y for x, y in zip(out_grid, patch_size)]
         self.grid_size = math.prod(self.grid)
         self.out_channels = out_channels
         
@@ -141,19 +141,18 @@ class TiTokDecoder(nn.Module):
         self.width, self.num_layers, self.num_heads, mlp_ratio = get_model_dims(model_size)
         scale = self.width ** -0.5
 
-        self.mask_tokens = nn.Parameter(scale * torch.randn(self.grid_size, self.width)) # doesn't need pos emb
+        self.mask_tokens = nn.Parameter(scale * torch.randn(self.grid_size, self.width))
         self.latent_token_positional_embedding = nn.Parameter(scale * torch.randn(self.num_latent_tokens, self.width))
 
         self.proj_in = nn.Linear(self.token_size, self.width, bias=True)
         self.ln_pre = nn.LayerNorm(self.width)
 
-        #############################
-        self.model_layers = nn.ModuleList()
-        for i in range(self.num_layers):
-            self.model_layers.append(ResidualAttentionBlock(d_model=self.width, n_head=self.num_heads, mlp_ratio=mlp_ratio))
-        #############################
+        self.model_layers = ResidualAttentionBlock(embed_dim=self.width, num_head=self.num_heads, mlp_ratio=mlp_ratio, num_layer=self.num_layers)
 
-        self.proj_out = nn.Linear(self.width, self.out_channels, bias=True)
+        self.proj_out = nn.Sequential(
+            nn.Linear(in_features=self.width, out_features=out_channels*math.prod(patch_size)),
+            Rearrange('b (nt nh nw) (c pt ph pw) -> b c (nt pt) (nh ph) (nw pw)', nt=self.grid[0], nh=self.grid[1], nw=self.grid[2], pt=patch_size[0], ph=patch_size[1], pw=patch_size[2]),
+        )
 
     def forward(self, x):
         x = self.proj_in(x)
@@ -163,10 +162,8 @@ class TiTokDecoder(nn.Module):
         x = torch.cat([mask_tokens, x], dim=1).contiguous()
         x = self.ln_pre(x)
 
-        for i in range(len(self.model_layers)):
-            x = self.model_layers[i](x)
+        x = self.model_layers(x)
 
         x = x[:, :self.grid_size]
         x = self.proj_out(x)
-        x = x.permute(0, 2, 1).reshape([x.shape[0], self.out_channels] + self.grid) # BLC -> BCL -> BCTHW
         return x

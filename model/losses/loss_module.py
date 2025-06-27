@@ -8,6 +8,7 @@ from model.discriminator.vit_disc import ViTDiscriminator
 from model.discriminator.n_layer import NLayerDiscriminatorSpectral, NLayerDiscriminatorSpectral3D, weights_init
 
 from model.metrics.lpips import LPIPS
+from model.metrics.cqvqm import CGVQM
 
 def zero_centered_grad_penalty(samples, critics):
     """Modified from https://github.com/brownvc/R3GAN"""
@@ -22,29 +23,28 @@ class ReconstructionLoss(nn.Module):
         super().__init__()
         self.config = config
         
-        cd = config.losses.disc
-        self.use_disc = cd.use_disc
-
         self.perceptual_weight = config.losses.recon.perceptual_weight
         if self.perceptual_weight > 0.0:
             self.perceptual_model = LPIPS().eval()
+            # self.perceptual_model = CGVQM().eval()
             for param in self.perceptual_model.parameters():
                 param.requires_grad = False
 
         self.dwt_weight = config.losses.recon.dwt_weight
 
-        cd = config.losses.disc
-        self.disc_weight = cd.disc_weight
-        self.disc_start = cd.disc_start
+        disc_conf = config.model.disc
+        ds_conf = config.dataset
+
+        self.use_disc = config.losses.disc.use_disc
+        self.disc_weight = config.losses.disc.disc_weight
+        self.disc_start = config.losses.disc.disc_start
 
         if self.use_disc:
             self.disc_model = ViTDiscriminator(
-                model_size=cd.model_size,
+                model_size=disc_conf.model_size,
+                in_grid=(ds_conf.num_frames, ds_conf.resolution, ds_conf.resolution),
                 in_channels=3,
-                in_spatial_size=config.dataset.resolution,
-                in_temporal_size=config.dataset.num_frames,
-                spatial_patch_size=cd.spatial_patch_size,
-                temporal_patch_size=cd.temporal_patch_size,
+                patch_size=(disc_conf.temporal_patch_size, disc_conf.spatial_patch_size, disc_conf.spatial_patch_size),
                 out_tokens=1,
             )
 
@@ -53,8 +53,8 @@ class ReconstructionLoss(nn.Module):
             if config.training.main.torch_compile:
                 self.disc_model = torch.compile(self.disc_model)
 
-            self.base_gamma = cd.base_gamma
-            self.final_gamma = cd.final_gamma
+            self.base_gamma = config.losses.disc.base_gamma
+            self.final_gamma = config.losses.disc.final_gamma
 
         self.total_steps = config.training.main.max_steps
     
@@ -94,6 +94,7 @@ class ReconstructionLoss(nn.Module):
                 trg_frames = rearrange(target, 'b c t h w -> (b t) c h w').contiguous()
                 perceptual_loss = self.perceptual_model(rec_frames, trg_frames).view(B, -1).mean(1) # [B]
 
+            # perceptual_loss = self.perceptual_model(recon, target).mean()
             loss_dict['perceptual_loss'] = perceptual_loss
 
         # dwt

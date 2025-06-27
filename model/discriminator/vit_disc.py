@@ -1,102 +1,81 @@
 import torch
 from torch import nn
-from model.base.transformer import ResidualAttentionBlock
+from model.base.transformer import ResidualAttentionBlock, GEGLU
 from model.base.blocks import get_model_dims
 from einops.layers.torch import Rearrange
-import torch.nn.utils as nn_utils
+import math
 
 def _expand_token(token, batch_size: int):
     return token.unsqueeze(0).expand(batch_size, -1, -1)
 
-def apply_spectral_norm(module: nn.Module):
-    for name, layer in module.named_children():
-        if isinstance(layer, (nn.Conv2d, nn.Conv3d, nn.Linear)):
-            setattr(module, name, nn_utils.spectral_norm(layer))
-        else:
-            apply_spectral_norm(layer)
-
 class ViTDiscriminator(nn.Module):
     def __init__(
             self,
-            model_size='tiny',
+            model_size="tiny",
+            in_grid=(8, 128, 128), # THW
             in_channels=3,
-            in_spatial_size=128,
-            in_temporal_size=8,
-            spatial_patch_size=8,
-            temporal_patch_size=4,
+            patch_size=(4, 8, 8),
             out_tokens=1,
         ):
         super().__init__()
+        self.num_latent_tokens = out_tokens
+
+        self.grid = [x//y for x, y in zip(in_grid, patch_size)]
+        self.grid_size = math.prod(self.grid)
         self.in_channels = in_channels
-        self.spatial_size = in_spatial_size
-        self.temporal_size = in_temporal_size
-        self.spatial_patch_size = spatial_patch_size
-        self.temporal_patch_size = temporal_patch_size
-        self.out_tokens = out_tokens
 
         self.width, self.num_layers, self.num_heads, mlp_ratio = get_model_dims(model_size)
-
-        assert self.spatial_size % self.spatial_patch_size == 0, "input dimensions should be evenly divisible by respective patch sizes"
-
-        self.grid_size = ((self.spatial_size // self.spatial_patch_size) ** 2) * (self.temporal_size // self.temporal_patch_size)
-        in_channel_depth = self.in_channels * self.temporal_patch_size * self.spatial_patch_size ** 2
         scale = self.width ** -0.5
 
-        self.latent_tokens = nn.Parameter(scale * torch.randn(out_tokens, self.width)) 
-
-        self.conv_in = nn.Sequential(
-            Rearrange('b c (t p1) (h p2) (w p3) -> b (p1 p2 p3 c) t h w',
-                p1 = self.temporal_patch_size, p2 = self.spatial_patch_size, p3 = self.spatial_patch_size),
-            nn.Conv3d(in_channels=in_channel_depth, out_channels=self.width, kernel_size=1, padding=0, bias=True),
-        )
-        
+        self.latent_tokens = nn.Parameter(scale * torch.randn(self.num_latent_tokens, self.width))
         self.positional_embedding = nn.Parameter(scale * torch.randn(self.grid_size, self.width))
 
-        self.model_layers = nn.ModuleList()
-        for i in range(self.num_layers):
-            self.model_layers.append(ResidualAttentionBlock(d_model=self.width, n_head=self.num_heads, mlp_ratio=mlp_ratio))
-
-        self.ln_post = nn.LayerNorm(self.width)
-
-        self.linear_out = nn.Sequential(
-            nn.Linear(self.width, self.width * 4),
-            nn.GELU(),
-            nn.Linear(self.width * 4, 1),
+        self.proj_in = nn.Sequential(
+            Rearrange('b c (nt pt) (nh ph) (nw pw) -> b (nt nh nw) (c pt ph pw)', pt=patch_size[0], ph=patch_size[1], pw=patch_size[2]),
+            nn.Linear(in_features=in_channels*math.prod(patch_size), out_features=self.width),
         )
 
-        # apply_spectral_norm(self)
+        self.model_layers = ResidualAttentionBlock(embed_dim=self.width, num_head=self.num_heads, mlp_ratio=mlp_ratio, num_layer=self.num_layers)
+
+        inner_dim = int(mlp_ratio * (2 / 3) * self.width)
+        inner_dim = 32 * ((inner_dim + 32 - 1) // 32)
+        self.proj_out =  nn.Sequential(
+            nn.LayerNorm(self.width),
+            nn.Linear(self.width, inner_dim * 2, bias=False),
+            GEGLU(),
+            nn.Linear(inner_dim, 1, bias=False), # 1 channel out
+        )
+
+        # just use single linear as out proj?
+
         self.apply(self._init_weights)
 
     def _init_weights(self, module):
-        """ Initialize the weights.
-            :param:
-                module -> torch.nn.Module: module to initialize
-        """
-        if isinstance(module, nn.Linear) or isinstance(module, nn.Conv1d) or isinstance(module, nn.Conv2d) or isinstance(module, nn.Conv3d):
+        if isinstance(module, nn.Linear):
             module.weight.data = nn.init.trunc_normal_(module.weight.data, mean=0.0, std=0.02)
             if module.bias is not None:
-                module.bias.data.zero_()
-        elif isinstance(module, nn.Embedding):
-            module.weight.data = nn.init.trunc_normal_(module.weight.data, mean=0.0, std=0.02)
+                nn.init.constant_(module.bias, 0)
         elif isinstance(module, nn.LayerNorm):
-            module.bias.data.zero_()
-            module.weight.data.fill_(1.0)
+            if module.bias is not None:
+                nn.init.constant_(module.bias, 0)
+            if module.weight is not None:
+                nn.init.constant_(module.weight, 1.0)
 
-    def forward(self, z):
-        z = self.conv_in(z)
-        
-        z = z.reshape(z.shape[0], z.shape[1], -1)
-        z = z.permute(0, 2, 1) # BCL -> BLC
-        z = z + self.positional_embedding.to(z.dtype)
-        
-        latent_token = _expand_token(self.latent_tokens, z.shape[0]).to(z.dtype)
-        z = torch.cat([z, latent_token], dim=1)
-        
-        for i in range(len(self.model_layers)):
-            z = self.model_layers[i](z)
-        
-        z = self.ln_post(z)
-        z = z[:, -self.out_tokens:]
-        z = self.linear_out(z) # only operates on out_tokens
+        elif isinstance(module, nn.Conv3d) or isinstance(module, nn.Conv2d):
+            nn.init.xavier_uniform_(module.weight)
+            nn.init.zeros_(module.bias)
 
-        return z # BLC
+    def forward(self, x):
+        x = self.proj_in(x)
+        
+        x = x + self.positional_embedding.to(x.dtype)
+        latent_tokens = _expand_token(self.latent_tokens, x.shape[0]).to(x.dtype)
+
+        x = torch.cat([x, latent_tokens], dim=1).contiguous()
+
+        x = self.model_layers(x)
+
+        out_tokens = x[:, -self.num_latent_tokens:]
+        out_tokens = self.proj_out(out_tokens)
+
+        return out_tokens # [B, L, 1]

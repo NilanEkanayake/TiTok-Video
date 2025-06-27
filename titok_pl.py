@@ -70,9 +70,9 @@ class TitokTrainer(L.LightningModule):
         x, results_dict = self.model(orig)
 
         loss, loss_dict = self.loss_module(
-            orig,
-            x,
-            self.global_step,
+            target=orig,
+            recon=x,
+            global_step=self.global_step,
             results_dict=results_dict,
         )
 
@@ -91,7 +91,12 @@ class TitokTrainer(L.LightningModule):
             with torch.nn.attention.sdpa_kernel(torch.nn.attention.SDPBackend.MATH):
                 self.toggle_optimizer(opt_d)
 
-                d_loss, d_loss_dict = self.loss_module(orig, x, self.global_step, disc_forward=True)
+                d_loss, d_loss_dict = self.loss_module(
+                    target=orig,
+                    recon=x,
+                    global_step=self.global_step,
+                    disc_forward=True
+                )
                 loss_dict.update(d_loss_dict)
 
                 self.manual_backward(d_loss)
@@ -128,8 +133,7 @@ class TitokTrainer(L.LightningModule):
     def validation_step(self, batch, batch_idx):
         with torch.no_grad():
             orig = batch['video']
-            recon, _ = self.model(orig)
-            recon = recon.clamp(-1, 1)
+            recon = self.model(orig)[0].clamp(-1, 1)
 
             self.eval_metrics.update(recon, orig)
 
