@@ -20,12 +20,14 @@ def ffd(dim, mult=4, mult_of=32, dropout=0.):
         GEGLU(),
         nn.Dropout(dropout),
         nn.Linear(inner_dim, dim, bias=False),
+        nn.LayerNorm(dim), # another LN to fix instability
     )
+
 
 class ResidualAttentionBlock(nn.Module):
     def __init__(
             self,
-            embed_dim,
+            embed_dim=512,
             num_head=8,
             mlp_ratio=4,
             num_layer=2,
