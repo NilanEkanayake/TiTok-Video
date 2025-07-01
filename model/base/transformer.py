@@ -20,7 +20,7 @@ def ffd(dim, mult=4, mult_of=32, dropout=0.):
         GEGLU(),
         nn.Dropout(dropout),
         nn.Linear(inner_dim, dim, bias=False),
-        # nn.LayerNorm(dim), # another LN to fix instability
+        nn.LayerNorm(dim), # another LN to fix instability
     )
 
 
@@ -32,11 +32,11 @@ class Attn(nn.Module):
         ):
         super(Attn, self).__init__()
 
-        self.ln = nn.LayerNorm(embed_dim)
+        # self.ln = nn.LayerNorm(embed_dim)
         self.attn = nn.MultiheadAttention(embed_dim, num_head, batch_first=True)
 
     def forward(self, x):
-        x = self.ln(x)
+        # x = self.ln(x) # no pre_ln on attn
         x = self.attn(query=x, key=x, value=x, need_weights=False)[0]
         return x
 
@@ -54,12 +54,12 @@ class ResidualAttentionBlock(nn.Module):
         self.attn_layer = nn.Sequential()
         self.ffd_layer = nn.Sequential()
         for _ in range(num_layer):
-            # self.attn_layer.append(nn.MultiheadAttention(embed_dim, num_head, batch_first=True))
             self.attn_layer.append(Attn(embed_dim, num_head))
             self.ffd_layer.append(ffd(embed_dim, mlp_ratio)) 
    
     def forward(self, x):
         for i in range(self.num_layer):
-            x = x + self.attn_layer[i](x) #(query=x, key=x, value=x, need_weights=False)[0]
+            x = x + self.attn_layer[i](x)
             x = x + self.ffd_layer[i](x) 
         return x
+    
