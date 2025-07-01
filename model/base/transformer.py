@@ -60,6 +60,6 @@ class ResidualAttentionBlock(nn.Module):
    
     def forward(self, x):
         for i in range(self.num_layer):
-            x = x + self.attn_layer[i](x) #(query=x, key=x, value=x, need_weights=False)[0] # no pre_ln on attn to avoid blocking
+            x = x + self.attn_layer[i](x) #(query=x, key=x, value=x, need_weights=False)[0]
             x = x + self.ffd_layer[i](x) 
         return x
