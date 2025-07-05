@@ -11,4 +11,3 @@ torchmetrics
 wandb[media]
 webdataset
 imageio
-jepa @ git+https://github.com/facebookresearch/jepa.git

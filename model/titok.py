@@ -71,7 +71,7 @@ class TiTok(nn.Module):
         self.apply(self._init_weights)
 
     def _init_weights(self, module):
-        if isinstance(module, nn.Linear):
+        if isinstance(module, nn.Linear): # SNLinear has internal init.
             module.weight.data = nn.init.trunc_normal_(module.weight.data, mean=0.0, std=0.02)
             if module.bias is not None:
                 nn.init.constant_(module.bias, 0)

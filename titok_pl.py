@@ -32,6 +32,8 @@ class TitokTrainer(L.LightningModule):
 
         if self.config.training.eval.offload_metrics:
             self.eval_metrics.set_device('cpu') # offload to cpu when not doing eval
+        else:
+            self.eval_metrics.set_device(next(self.model.parameters()).device)
 
         self.loss_module = ReconstructionLoss(config)
 
@@ -48,7 +50,6 @@ class TitokTrainer(L.LightningModule):
         
         self.automatic_optimization = False
         self.strict_loading = False # to allow loading from lpips-less checkpoint
-
 
     def training_step(self, batch, batch_idx):
         orig = batch['video']
@@ -114,7 +115,6 @@ class TitokTrainer(L.LightningModule):
         if self.config.training.eval.log_codebook: # small speed hit?
             self.codebook_logger(results_dict['codes'].detach().cpu())
 
-
     def on_validation_epoch_start(self):
         if self.config.training.eval.offload_metrics:
             self.eval_metrics.set_device(next(self.model.parameters()).device) # move to gpu
@@ -129,7 +129,6 @@ class TitokTrainer(L.LightningModule):
         self.seen_eval = 0
         self.seen_recon = 0
 
-
     def validation_step(self, batch, batch_idx):
         with torch.no_grad():
             orig = batch['video']
@@ -142,9 +141,14 @@ class TitokTrainer(L.LightningModule):
                 merged_video = torch.cat((y, x), dim=-1).permute(1, 0, 2, 3).cpu().float().numpy() # tch(W) concat
                 merged_video = ((merged_video + 1) / 2 * 255).astype(np.uint8)
                 self.seen_recon += 1
-                self.logger.log_video(key=f"Video recon {self.seen_recon}", videos=[merged_video], step=self.global_step, fps=[self.config.dataset.frames_per_second], format=['mp4'])
+                self.logger.log_video(
+                    key=f"Video recon {self.seen_recon}",
+                    videos=[merged_video],
+                    step=self.global_step,
+                    fps=[self.config.dataset.frames_per_second],
+                    format=['mp4']
+                )
             self.seen_eval += 1
-
 
     def on_validation_epoch_end(self):
         self.logger.log_metrics(self.eval_metrics.compute(), step=self.global_step)
@@ -159,10 +163,8 @@ class TitokTrainer(L.LightningModule):
         if self.config.training.eval.clear_cache:
             torch.cuda.empty_cache()
 
-
     def forward(self, x):
         pass
-
 
     def configure_optimizers(self):
         opt_conf_g = self.config.optimizer.titok
@@ -224,7 +226,7 @@ if __name__ == '__main__':
     torch.backends.cudnn.benchmark = True
     torch.backends.cudnn.deterministic = False
 
-    torch.set_float32_matmul_precision("medium")
+    # torch.set_float32_matmul_precision("medium")
 
     resume_path = config.general.checkpoints.get('resume_from_checkpoint', False)
     init_path = config.general.checkpoints.get('init_from_checkpoint', False)

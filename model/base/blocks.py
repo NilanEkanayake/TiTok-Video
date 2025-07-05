@@ -22,6 +22,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from model.base.transformer import ResidualAttentionBlock
+from model.base.sigma_reparam import SNLinear
 
 from einops.layers.torch import Rearrange
 import math
@@ -92,14 +93,13 @@ class TiTokEncoder(nn.Module):
 
         self.proj_in = nn.Sequential(
             Rearrange('b c (nt pt) (nh ph) (nw pw) -> b (nt nh nw) (c pt ph pw)', pt=patch_size[0], ph=patch_size[1], pw=patch_size[2]),
-            nn.Linear(in_features=in_channels*math.prod(patch_size), out_features=self.width),
+            SNLinear(in_features=in_channels*math.prod(patch_size), out_features=self.width),
         )
 
         self.model_layers = ResidualAttentionBlock(embed_dim=self.width, num_head=self.num_heads, mlp_ratio=mlp_ratio, num_layer=self.num_layers)
 
         self.ln_post = nn.LayerNorm(self.width)
-        self.proj_out = nn.Linear(self.width, self.token_size, bias=True)
-
+        self.proj_out = SNLinear(self.width, self.token_size, bias=True)
 
     def forward(self, x):
         x = self.proj_in(x) # returns BLC
@@ -144,13 +144,13 @@ class TiTokDecoder(nn.Module):
         self.mask_tokens = nn.Parameter(scale * torch.randn(self.grid_size, self.width))
         self.latent_token_positional_embedding = nn.Parameter(scale * torch.randn(self.num_latent_tokens, self.width))
 
-        self.proj_in = nn.Linear(self.token_size, self.width, bias=True)
+        self.proj_in = SNLinear(self.token_size, self.width, bias=True)
         self.ln_pre = nn.LayerNorm(self.width)
 
         self.model_layers = ResidualAttentionBlock(embed_dim=self.width, num_head=self.num_heads, mlp_ratio=mlp_ratio, num_layer=self.num_layers)
 
         self.proj_out = nn.Sequential(
-            nn.Linear(in_features=self.width, out_features=out_channels*math.prod(patch_size)),
+            SNLinear(in_features=self.width, out_features=out_channels*math.prod(patch_size)),
             Rearrange('b (nt nh nw) (c pt ph pw) -> b c (nt pt) (nh ph) (nw pw)', nt=self.grid[0], nh=self.grid[1], nw=self.grid[2], pt=patch_size[0], ph=patch_size[1], pw=patch_size[2]),
         )
 
