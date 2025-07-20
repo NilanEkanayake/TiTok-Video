@@ -6,7 +6,7 @@ numpy
 omegaconf
 scikit-learn
 scipy
-torch>=2.4.0
+torch>=2.5.0
 torchmetrics
 wandb[media]
 webdataset

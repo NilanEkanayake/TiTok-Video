@@ -82,9 +82,6 @@ class FVDCalculator(nn.Module):
         
     def forward(self):
         pass
-
-    def set_device(self, device):
-        self.detector = self.detector.to(device)
     
 """
 FROM: https://github.com/PKU-YuanGroup/Open-Sora-Plan/blob/main/opensora/models/causalvideovae/eval/fvd/styleganv/fvd.py

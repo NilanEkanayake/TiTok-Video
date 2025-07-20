@@ -12,12 +12,14 @@ import numpy as np
 import math
 
 from dataset.video_dataset import WebdatasetVideoDataModule
+# from model.titok import TiTok
 from model.titok import TiTok
 from model.losses.loss_module import ReconstructionLoss
 from train_utils.lr_schedulers import get_scheduler
 from train_utils.codebook_logging import CodebookLogger
 
 from model.metrics.eval_metrics import EvalMetrics
+import random
 
     
 class TitokTrainer(L.LightningModule):
@@ -29,12 +31,6 @@ class TitokTrainer(L.LightningModule):
 
         self.model = TiTok(config)
         self.eval_metrics = EvalMetrics(config)
-
-        if self.config.training.eval.offload_metrics:
-            self.eval_metrics.set_device('cpu') # offload to cpu when not doing eval
-        else:
-            self.eval_metrics.set_device(next(self.model.parameters()).device)
-
         self.loss_module = ReconstructionLoss(config)
 
         if config.training.main.torch_compile:
@@ -51,8 +47,14 @@ class TitokTrainer(L.LightningModule):
         self.automatic_optimization = False
         self.strict_loading = False # to allow loading from lpips-less checkpoint
 
+
     def training_step(self, batch, batch_idx):
         orig = batch['video']
+
+        # token_counts = self.get_token_counts(orig)
+        token_range = self.config.model.titok.num_token_range
+        token_counts = [random.randrange(token_range[0], token_range[1]) for _ in range(len(orig))]
+
 
         if self.use_disc:
             opt_g, opt_d = self.optimizers()
@@ -68,7 +70,7 @@ class TitokTrainer(L.LightningModule):
         ############################
         self.toggle_optimizer(opt_g)
 
-        x, results_dict = self.model(orig)
+        x, results_dict = self.model(orig, token_counts)
 
         loss, loss_dict = self.loss_module(
             target=orig,
@@ -89,7 +91,7 @@ class TitokTrainer(L.LightningModule):
         ############################
 
         if self.use_disc and self.global_step >= self.config.losses.disc.disc_start and self.global_step % self.config.losses.disc.every_n == 0:
-            with torch.nn.attention.sdpa_kernel(torch.nn.attention.SDPBackend.MATH):
+            # with torch.nn.attention.sdpa_kernel(torch.nn.attention.SDPBackend.MATH):
                 self.toggle_optimizer(opt_d)
 
                 d_loss, d_loss_dict = self.loss_module(
@@ -113,12 +115,9 @@ class TitokTrainer(L.LightningModule):
         self.log_dict(loss_dict, prog_bar=True)
 
         if self.config.training.eval.log_codebook: # small speed hit?
-            self.codebook_logger(results_dict['codes'].detach().cpu())
+            self.codebook_logger(results_dict['indices'].detach().cpu())
 
     def on_validation_epoch_start(self):
-        if self.config.training.eval.offload_metrics:
-            self.eval_metrics.set_device(next(self.model.parameters()).device) # move to gpu
-
         # recon sampling from eval dataset
         num_recon = self.config.training.eval.log_recon_num
         if self.config.training.eval.random_recon:
@@ -132,20 +131,28 @@ class TitokTrainer(L.LightningModule):
     def validation_step(self, batch, batch_idx):
         with torch.no_grad():
             orig = batch['video']
-            recon = self.model(orig)[0].clamp(-1, 1)
+            fps = batch['fps']
 
+            # use max quality?
+            # token_counts = self.get_token_counts(orig)
+            token_range = self.config.model.titok.num_token_range
+            token_counts = [random.randrange(token_range[0], token_range[1]) for _ in range(len(orig))]
+
+
+            recon, _ = self.model(orig, token_counts)
             self.eval_metrics.update(recon, orig)
 
-        for x, y in zip(recon, orig):
+        for x, y, f, t in zip(recon, orig, fps, token_counts): # list of CTHW, recon and orig sharing tensor shape
             if self.seen_eval in self.recon_indexes:
-                merged_video = torch.cat((y, x), dim=-1).permute(1, 0, 2, 3).cpu().float().numpy() # tch(W) concat
+                merged_video = torch.cat((y, x.clamp(-1, 1)), dim=-1).permute(1, 0, 2, 3).cpu().float().numpy() # tch(W) concat
                 merged_video = ((merged_video + 1) / 2 * 255).astype(np.uint8)
                 self.seen_recon += 1
                 self.logger.log_video(
                     key=f"Video recon {self.seen_recon}",
                     videos=[merged_video],
                     step=self.global_step,
-                    fps=[self.config.dataset.frames_per_second],
+                    fps=[f],
+                    caption=[f"{t} tokens"],
                     format=['mp4']
                 )
             self.seen_eval += 1
@@ -157,9 +164,6 @@ class TitokTrainer(L.LightningModule):
         if self.config.training.eval.log_codebook and self.codebook_logger.is_score_ready():
             self.logger.log_metrics(self.codebook_logger.get_scores(), step=self.global_step)
 
-        if self.config.training.eval.offload_metrics:
-            self.eval_metrics.set_device('cpu')
-
         if self.config.training.eval.clear_cache:
             torch.cuda.empty_cache()
 
@@ -168,12 +172,27 @@ class TitokTrainer(L.LightningModule):
 
     def configure_optimizers(self):
         opt_conf_g = self.config.optimizer.titok
+
+        ###
+        exclude = (lambda n, p: p.ndim < 2 or "ln" in n or "bias" in n or 'latent_tokens' in n 
+            or 'mask_tokens' in n or 'norm' in n or 'gamma' in n or 'sigma' in n or 'positional_embedding' in n) # also include projections?
+        include = lambda n, p: not exclude(n, p)
+        named_parameters = list(self.model.named_parameters())
+        gain_or_bias_params = [p for n, p in named_parameters if exclude(n, p) and p.requires_grad]
+        rest_params = [p for n, p in named_parameters if include(n, p) and p.requires_grad]
+        ###
+
         opt_g = optim.AdamW(
             self.model.parameters(),
             weight_decay=opt_conf_g.weight_decay,
+            # [
+            #     {"params": gain_or_bias_params, "weight_decay": 0.},
+            #     {"params": rest_params, "weight_decay": opt_conf_g.weight_decay},
+            # ],
             lr=opt_conf_g.learning_rate, 
             betas=[opt_conf_g.beta1, opt_conf_g.beta2],
         )
+
         lr_g = get_scheduler(
             name='cosine',
             optimizer=opt_g,

@@ -1,49 +1,48 @@
 import torch
-from torch import nn
+import torch.nn as nn
+import torch.nn.functional as F
 from model.base.transformer import ResidualAttentionBlock, GEGLU
+from model.base.sigma_reparam import SNLinear
+from model.base.rope import RoPE
+
+from torch.nested import nested_tensor, as_nested_tensor
 from model.base.blocks import get_model_dims
+
 from einops.layers.torch import Rearrange
+from einops import rearrange
 import math
 
-def _expand_token(token, batch_size: int):
-    return token.unsqueeze(0).expand(batch_size, -1, -1)
 
 class ViTDiscriminator(nn.Module):
     def __init__(
             self,
             model_size="tiny",
-            in_grid=(8, 128, 128), # THW
-            in_channels=3,
             patch_size=(4, 8, 8),
             out_tokens=1,
+            in_channels=3,
+            out_channels=1,
         ):
         super().__init__()
-        self.num_latent_tokens = out_tokens
 
-        self.grid = [x//y for x, y in zip(in_grid, patch_size)]
-        self.grid_size = math.prod(self.grid)
-        self.in_channels = in_channels
+        self.patch_size = patch_size
+        self.num_out_tokens = out_tokens
 
         self.width, self.num_layers, self.num_heads, mlp_ratio = get_model_dims(model_size)
         scale = self.width ** -0.5
 
-        self.latent_tokens = nn.Parameter(scale * torch.randn(self.num_latent_tokens, self.width))
-        self.positional_embedding = nn.Parameter(scale * torch.randn(self.grid_size, self.width))
+        self.rope = RoPE(self.width)
 
-        self.proj_in = nn.Sequential(
-            Rearrange('b c (nt pt) (nh ph) (nw pw) -> b (nt nh nw) (c pt ph pw)', pt=patch_size[0], ph=patch_size[1], pw=patch_size[2]),
-            nn.Linear(in_features=in_channels*math.prod(patch_size), out_features=self.width),
-        )
-
+        self.mask_token = nn.Parameter(scale * torch.randn(1))
+        self.proj_in = SNLinear(in_features=in_channels*math.prod(patch_size), out_features=self.width)
         self.model_layers = ResidualAttentionBlock(embed_dim=self.width, num_head=self.num_heads, mlp_ratio=mlp_ratio, num_layer=self.num_layers)
 
         inner_dim = int(mlp_ratio * (2 / 3) * self.width)
         inner_dim = 32 * ((inner_dim + 32 - 1) // 32)
         self.proj_out =  nn.Sequential(
             nn.LayerNorm(self.width),
-            nn.Linear(self.width, inner_dim * 2, bias=False),
+            SNLinear(self.width, inner_dim * 2, bias=False),
             GEGLU(),
-            nn.Linear(inner_dim, 1, bias=False), # 1 channel out
+            SNLinear(inner_dim, out_channels, bias=False), # 1 channel out
         )
 
         # just use single linear as out proj?
@@ -65,17 +64,22 @@ class ViTDiscriminator(nn.Module):
             nn.init.xavier_uniform_(module.weight)
             nn.init.zeros_(module.bias)
 
-    def forward(self, x):
-        x = self.proj_in(x)
-        
-        x = x + self.positional_embedding.to(x.dtype)
-        latent_tokens = _expand_token(self.latent_tokens, x.shape[0]).to(x.dtype)
 
-        x = torch.cat([x, latent_tokens], dim=1).contiguous()
+    def forward(self, x): # x is list of CTHW vids
+        device = x[0].device
+        grids = [[dim//ps for dim, ps in zip(vid.shape[1:], self.patch_size)] for vid in x] # c|THW|
 
-        x = self.model_layers(x)
+        x = [rearrange(vid, 'c (nt pt) (nh ph) (nw pw) -> (nt nh nw) (c pt ph pw)', pt=self.patch_size[0], ph=self.patch_size[1], pw=self.patch_size[2]) for vid in x] # patching
+        x = as_nested_tensor(x, layout=torch.jagged, device=device).contiguous() # BLC nested tensor
+        x = self.proj_in(x) # returns BLC
 
-        out_tokens = x[:, -self.num_latent_tokens:]
+        latent_tokens = self.mask_token.repeat(self.num_out_tokens, self.width) # LC - use absolute pos emb? not worth effort?
+        x = as_nested_tensor([torch.cat([vid, latent_tokens], dim=0) for vid in x], layout=torch.jagged, device=device).contiguous()
+
+        freqs = self.rope(x, grids, [self.num_out_tokens]*len(grids))
+        x = self.model_layers(x, freqs)
+
+        out_tokens = torch.stack([tokens[-self.num_out_tokens:] for tokens in x], dim=0).contiguous() # fixed number of output tokens, can use dense tensor
+
         out_tokens = self.proj_out(out_tokens)
-
-        return out_tokens # [B, L, 1]
+        return out_tokens # tensor out = [B, out_tokens, out_channels]

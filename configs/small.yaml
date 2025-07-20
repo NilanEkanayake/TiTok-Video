@@ -1,7 +1,7 @@
 general:
     wandb:
-        project: pixel_titok_video_9
-        run_name: sub4LPIPS-BS8-16f-TL512-10kWarm
+        project: pixel_titok_video_10
+        run_name: sub3LPIPS-BS32-small_thin-full_multires-verify
         log_step_interval: 50
 
     checkpoints:
@@ -14,50 +14,47 @@ general:
 
 model:
     titok:
-        temporal_patch_size: 4
-        spatial_patch_size: 8
+        patch_size: [4, 8, 8]
 
         encoder_size: small_thin
         decoder_size: small_thin
 
-        num_latent_tokens: 512
+        num_token_range: [64, 1024] # token counts are randomly sampled from this range for each video during training.
         fsq_levels: [7, 7, 7, 5, 5] # CB size: 8575
 
     disc:
-        temporal_patch_size: 4
-        spatial_patch_size: 8
-
-        model_size: tiny_thin # tiny
+        patch_size: [4, 8, 8]
+        model_size: tiny_thin
 
 losses:
     recon:
-        dwt_weight: 0.1
         perceptual_weight: 1.0
-        perceptual_subsample: 3 # calculate lpips score from lpips_subsample frames in each clip. Use -1 to sample all.
+        perceptual_subsample_per_batch: 96 # Use -1 to sample all.
 
-    disc: # not ready yet
+    disc:
         use_disc: False
         freeze_encoder: False
 
-        disc_start: 294000
+        disc_start: 16000
         disc_weight: 0.4
-        disc_weight_warmup_steps: 1 # 20000
+        disc_weight_warmup_steps: 1
 
         every_n: 7 # num encoder steps between discriminator steps
         base_gamma: 500.0
         final_gamma: 50.0
 
 dataset:
-    train_dataset: "hf://datasets/NilanE/Vchitect_T2V_DataVerse_256p_8fps_wds/shards/*.tar"
+    train_dataset: "hf://datasets/NilanE/Vchitect_T2V_DataVerse_256p_8fps_wds/shards/*.tar" # "hf://datasets/Vchitect/Vchitect_T2V_DataVerse/**/*.tar"
     eval_dataset: "03.tar" # "hf://datasets/facebook/PE-Video/test/*.tar"
-    resolution: 128
-    num_frames: 16
-    frames_per_second: 8
-    workers: 4
-    pin_memory: False # uses extra VRAM when enabled.
 
-    chunk_type: random_multi # random_multi, random_single
-    max_chunks: 20 # avoid OOM
+    # videos are sampled between min and max dimensions during training.
+    max_grid: [32, 256, 256]
+    min_grid: [8, 64, 64]
+
+    fps_range: [3, 10]
+
+    workers: 8
+    pin_memory: True
 
 optimizer:
     titok:
@@ -65,7 +62,7 @@ optimizer:
         beta1: 0.9
         beta2: 0.99
         weight_decay: 1e-4
-        warmup_steps: 10000
+        warmup_steps: 5000
         end_lr: 1e-5
 
     disc:
@@ -84,18 +81,18 @@ training:
         accelerator: 'gpu'
         train_devices: 1
         enable_tf32: True
-        torch_compile: False # True?
+        torch_compile: False
 
         seed: 42
         max_grad_norm: 1.0
 
     eval:
-        eval_step_interval: 1000
+        eval_step_interval: 500
         num_eval: 128
-        batch_size: 8
+        batch_size: 16
 
         log_codebook: True
-        log_jedi: True
+        log_jedi: False
         log_fvd: True
         log_recon_num: 4
 
@@ -103,4 +100,3 @@ training:
         jedi_jepa_model: vit_large # vit_huge
 
         clear_cache: True
-        offload_metrics: True

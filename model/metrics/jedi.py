@@ -150,11 +150,6 @@ class JEDiMetric(nn.Module):
         stats = mmd_poly(target_feats, recon_feats, degree=2, coef0=0)*100
 
         return stats
-    
-    def set_device(self, device): # to save VRAM when not doing eval
-        self.model = self.model.to(device)
-        if self.finetuned:
-            self.classifier = self.classifier.to(device)
             
     def forward(self):
         pass

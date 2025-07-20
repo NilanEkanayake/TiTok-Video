@@ -23,13 +23,14 @@ import torch.nn as nn
 import torch.nn.functional as F
 from model.base.transformer import ResidualAttentionBlock
 from model.base.sigma_reparam import SNLinear
+from model.base.rope import RoPE
+
+from torch.nested import nested_tensor, as_nested_tensor
 
 from einops.layers.torch import Rearrange
+from einops import rearrange
 import math
-    
 
-def _expand_token(token, batch_size: int):
-    return token.unsqueeze(0).expand(batch_size, -1, -1)
 
 def get_model_dims(model_size='tiny', head_dim=64, mlp_ratio=4.0):
     if model_size.endswith('_thin'): # https://arxiv.org/pdf/2505.20802
@@ -70,48 +71,45 @@ class TiTokEncoder(nn.Module):
     def __init__(
             self,
             model_size="tiny",
-            in_grid=(8, 128, 128), # THW
-            in_channels=3,
             patch_size=(4, 8, 8),
-            out_tokens=256,
+            in_channels=3,
             out_channels=5,
         ):
         super().__init__()
-
-        self.num_latent_tokens = out_tokens
+        self.patch_size = patch_size
         self.token_size = out_channels
-
-        self.grid = [x//y for x, y in zip(in_grid, patch_size)]
-        self.grid_size = math.prod(self.grid)
         self.in_channels = in_channels
 
         self.width, self.num_layers, self.num_heads, mlp_ratio = get_model_dims(model_size)
         scale = self.width ** -0.5
 
-        self.latent_tokens = nn.Parameter(scale * torch.randn(self.num_latent_tokens, self.width))
-        self.positional_embedding = nn.Parameter(scale * torch.randn(self.grid_size, self.width))
+        self.rope = RoPE(self.width)
 
-        self.proj_in = nn.Sequential(
-            Rearrange('b c (nt pt) (nh ph) (nw pw) -> b (nt nh nw) (c pt ph pw)', pt=patch_size[0], ph=patch_size[1], pw=patch_size[2]),
-            SNLinear(in_features=in_channels*math.prod(patch_size), out_features=self.width),
-        )
+        self.mask_token = nn.Parameter(scale * torch.randn(1))
+
+        self.proj_in = SNLinear(in_features=in_channels*math.prod(patch_size), out_features=self.width)
 
         self.model_layers = ResidualAttentionBlock(embed_dim=self.width, num_head=self.num_heads, mlp_ratio=mlp_ratio, num_layer=self.num_layers)
 
         self.ln_post = nn.LayerNorm(self.width)
         self.proj_out = SNLinear(self.width, self.token_size, bias=True)
 
-    def forward(self, x):
+    def forward(self, x, token_counts):
+        device = x[0].device
+        grids = [[dim//ps for dim, ps in zip(vid.shape[1:], self.patch_size)] for vid in x]
+
+        x = [rearrange(vid, 'c (nt pt) (nh ph) (nw pw) -> (nt nh nw) (c pt ph pw)', pt=self.patch_size[0], ph=self.patch_size[1], pw=self.patch_size[2]) for vid in x] # patching
+        x = as_nested_tensor(x, layout=torch.jagged, device=device).contiguous() # BLC nested tensor
         x = self.proj_in(x) # returns BLC
 
-        x = x + self.positional_embedding.to(x.dtype)
-        latent_tokens = _expand_token(self.latent_tokens, x.shape[0]).to(x.dtype)
+        latent_tokens = [self.mask_token.repeat(num, self.width) for num in token_counts]
+        x = as_nested_tensor([torch.cat([vid, tokens], dim=0) for vid, tokens in zip(x, latent_tokens)], layout=torch.jagged, device=device).contiguous()
 
-        x = torch.cat([x, latent_tokens], dim=1).contiguous()
+        freqs = self.rope(x, grids, token_counts)
+        x = self.model_layers(x, freqs)
 
-        x = self.model_layers(x)
+        latent_tokens = as_nested_tensor([tokens[-num:] for tokens, num in zip(x, token_counts)], layout=torch.jagged, device=device).contiguous()
 
-        latent_tokens = x[:, -self.num_latent_tokens:]
         latent_tokens = self.ln_post(latent_tokens)
         latent_tokens = self.proj_out(latent_tokens)
         
@@ -122,48 +120,56 @@ class TiTokDecoder(nn.Module):
     def __init__(
             self,
             model_size="tiny",
-            in_tokens=256,
-            in_channels=5,
             patch_size=(4, 8, 8),
-            out_grid=(8, 128, 128), # THW
+            in_channels=5,
             out_channels=3,
         ):
         super().__init__()
-
-        self.num_latent_tokens = in_tokens
+        self.patch_size = patch_size
         self.token_size = in_channels
-
-        self.grid = [x//y for x, y in zip(out_grid, patch_size)]
-        self.grid_size = math.prod(self.grid)
         self.out_channels = out_channels
-        
 
         self.width, self.num_layers, self.num_heads, mlp_ratio = get_model_dims(model_size)
         scale = self.width ** -0.5
 
-        self.mask_tokens = nn.Parameter(scale * torch.randn(self.grid_size, self.width))
-        self.latent_token_positional_embedding = nn.Parameter(scale * torch.randn(self.num_latent_tokens, self.width))
+        self.rope = RoPE(self.width)
+
+        self.mask_token = nn.Parameter(scale * torch.randn(1))
 
         self.proj_in = SNLinear(self.token_size, self.width, bias=True)
         self.ln_pre = nn.LayerNorm(self.width)
 
         self.model_layers = ResidualAttentionBlock(embed_dim=self.width, num_head=self.num_heads, mlp_ratio=mlp_ratio, num_layer=self.num_layers)
 
-        self.proj_out = nn.Sequential(
-            SNLinear(in_features=self.width, out_features=out_channels*math.prod(patch_size)),
-            Rearrange('b (nt nh nw) (c pt ph pw) -> b c (nt pt) (nh ph) (nw pw)', nt=self.grid[0], nh=self.grid[1], nw=self.grid[2], pt=patch_size[0], ph=patch_size[1], pw=patch_size[2]),
-        )
+        self.proj_out = SNLinear(in_features=self.width, out_features=out_channels*math.prod(patch_size))
 
-    def forward(self, x):
+
+    def forward(self, x, out_grids):
+        device = x.device
+        token_counts = [sample.shape[0] for sample in x] # get L for every item in batch
+
+        grids = [[dim//ps for dim, ps in zip(grid, self.patch_size)] for grid in out_grids]
+        grid_sizes = [math.prod(grid) for grid in grids]
+
         x = self.proj_in(x)
-        mask_tokens = _expand_token(self.mask_tokens, x.shape[0]).to(x.dtype)
-        
-        x = x + self.latent_token_positional_embedding
-        x = torch.cat([mask_tokens, x], dim=1).contiguous()
+
+        mask_tokens = [self.mask_token.repeat(grid_size, self.width) for grid_size in grid_sizes]        
+        x = as_nested_tensor([torch.cat([masked_vid, tokens], dim=0) for masked_vid, tokens in zip(mask_tokens, x)], layout=torch.jagged, device=device).contiguous()
+
         x = self.ln_pre(x)
 
-        x = self.model_layers(x)
+        freqs = self.rope(x, grids, token_counts)
+        x = self.model_layers(x, freqs)
 
-        x = x[:, :self.grid_size]
+        x = as_nested_tensor([tokens[:grid_size] for tokens, grid_size in zip(x, grid_sizes)], layout=torch.jagged, device=device).contiguous() # keeps grads?
         x = self.proj_out(x)
-        return x
+
+        x = [rearrange(
+                vid,
+                '(nt nh nw) (c pt ph pw) -> c (nt pt) (nh ph) (nw pw)',
+                nt=grid[0], nh=grid[1], nw=grid[2],
+                pt=self.patch_size[0], ph=self.patch_size[1], pw=self.patch_size[2],
+            )
+            for vid, grid in zip(x, grids)]
+        
+        return x # list of video tensors in (CTHW) out

@@ -3,6 +3,10 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from model.base.sigma_reparam import SNLinear
+from model.base.rope import apply_rotary_emb
+from einops import rearrange
+
+# from timm.layers import Attention
 
 """
 Modified from: https://github.com/westlake-repl/LeanVAE/blob/master/LeanVAE/modules/backbones.py
@@ -25,22 +29,39 @@ def ffd(dim, mult=4, mult_of=32, dropout=0.):
         nn.LayerNorm(dim), # another LN to fix instability
     )
 
-
 class Attn(nn.Module):
-    def __init__(
-        self,
-        embed_dim=512,
-        num_head=8,
-        ):
-        super(Attn, self).__init__()
+    def __init__(self, dim, heads):
+        super().__init__()
+        self.dim = dim
+        self.heads = heads
 
-        # self.ln = nn.LayerNorm(embed_dim)
-        self.attn = nn.MultiheadAttention(embed_dim, num_head, batch_first=True)
+        # enabling both linears = 10.1m params.
+        self.to_qkv = nn.Linear(dim, dim * 3, bias=False)
+        self.out_proj = nn.Linear(dim, dim, bias=False)
 
-    def forward(self, x):
-        # x = self.ln(x) # no pre_ln on attn
-        x = self.attn(query=x, key=x, value=x, need_weights=False)[0]
-        return x
+        self.q_norm = nn.LayerNorm(dim)
+        self.k_norm = nn.LayerNorm(dim)
+
+    def forward(self, x, freqs):
+        q, k, v = self.to_qkv(x).chunk(3, dim = -1)
+
+        q = self.q_norm(q)
+        k = self.k_norm(k)
+
+        # apply rope - prior to head split, see LTX-video
+        q = apply_rotary_emb(q, freqs)
+        k = apply_rotary_emb(k, freqs)
+
+        def split_heads(t):
+            return t.unflatten(-1, (self.heads, self.dim//self.heads)).transpose(1, 2)
+
+        q, k, v = [split_heads(i) for i in (q, k, v)]
+
+        out = F.scaled_dot_product_attention(q, k, v, enable_gqa=False, is_causal=False)
+
+        out = out.transpose(1, 2).flatten(-2)
+
+        return self.out_proj(out)
 
 
 class ResidualAttentionBlock(nn.Module):
@@ -57,12 +78,10 @@ class ResidualAttentionBlock(nn.Module):
         self.ffd_layer = nn.Sequential()
         for _ in range(num_layer):
             self.attn_layer.append(Attn(embed_dim, num_head))
-            # self.attn_layer.append(nn.MultiheadAttention(embed_dim, num_head, batch_first=True))
             self.ffd_layer.append(ffd(embed_dim, mlp_ratio)) 
    
-    def forward(self, x):
+    def forward(self, x, freqs):
         for i in range(self.num_layer):
-            x = x + self.attn_layer[i](x) # (query=x, key=x, value=x, need_weights=False)[0]
+            x = x + self.attn_layer[i](x, freqs)
             x = x + self.ffd_layer[i](x) 
         return x
-    
