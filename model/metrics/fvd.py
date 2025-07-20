@@ -24,7 +24,7 @@ def download(url, local_path, chunk_size=1024):
                         pbar.update(chunk_size)
 
 class FVDCalculator(nn.Module):
-    def __init__(self):
+    def __init__(self, device='cuda'):
         super().__init__()
         detector_url = 'https://www.dropbox.com/s/ge9e5ujwgetktms/i3d_torchscript.pt?dl=1'
         local_file_path = 'model/metrics/i3d_torchscript.pt'
@@ -33,7 +33,7 @@ class FVDCalculator(nn.Module):
             download(detector_url, local_file_path)
 
         with open(local_file_path, 'rb') as f:
-            self.detector = torch.jit.load(f).eval().to(torch.float32)
+            self.detector = torch.jit.load(f).eval().to(device, torch.float32)
         self.detector_kwargs = dict(rescale=False, resize=False, return_features=True)
 
         self.metric_name = 'fvd'
