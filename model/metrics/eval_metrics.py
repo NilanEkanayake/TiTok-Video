@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from model.metrics import jedi, fvd
+from model.metrics import fvd
 from torchmetrics.image import PeakSignalNoiseRatio, StructuralSimilarityIndexMeasure
 from torchmetrics import MetricCollection
 from torchvision.transforms import v2
@@ -13,12 +13,11 @@ class EvalMetrics(nn.Module):
     def __init__(self, config, eval_prefix='eval'):
         super().__init__()
         self.eval_prefix = eval_prefix
-        self.max_grid = config.dataset.max_grid
 
         self.eval_metrics = MetricCollection(
             {
-                "psnr": PeakSignalNoiseRatio(),
-                "ssim": StructuralSimilarityIndexMeasure(),
+                "psnr": PeakSignalNoiseRatio(data_range=2), # -1, 1
+                "ssim": StructuralSimilarityIndexMeasure(data_range=2),
             },
             prefix=f"{eval_prefix}/",
         )
@@ -29,6 +28,7 @@ class EvalMetrics(nn.Module):
             self.optional_metrics.append(fvd.FVDCalculator())
 
         if config.training.eval.log_jedi:
+            from model.metrics import jedi
             model_name = config.training.eval.jedi_jepa_model
             self.optional_metrics.append(jedi.JEDiMetric(model_name=model_name))
     

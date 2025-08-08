@@ -12,7 +12,6 @@ import numpy as np
 import math
 
 from dataset.video_dataset import WebdatasetVideoDataModule
-# from model.titok import TiTok
 from model.titok import TiTok
 from model.losses.loss_module import ReconstructionLoss
 from train_utils.lr_schedulers import get_scheduler
@@ -50,11 +49,7 @@ class TitokTrainer(L.LightningModule):
 
     def training_step(self, batch, batch_idx):
         orig = batch['video']
-
-        # token_counts = self.get_token_counts(orig)
-        token_range = self.config.model.titok.num_token_range
-        token_counts = [random.randrange(token_range[0], token_range[1]) for _ in range(len(orig))]
-
+        token_counts = batch['token_count']
 
         if self.use_disc:
             opt_g, opt_d = self.optimizers()
@@ -115,7 +110,7 @@ class TitokTrainer(L.LightningModule):
         self.log_dict(loss_dict, prog_bar=True)
 
         if self.config.training.eval.log_codebook: # small speed hit?
-            self.codebook_logger(results_dict['indices'].detach().cpu())
+            self.codebook_logger([i.detach().cpu() for i in results_dict['indices']])
 
     def on_validation_epoch_start(self):
         # recon sampling from eval dataset
@@ -132,12 +127,7 @@ class TitokTrainer(L.LightningModule):
         with torch.no_grad():
             orig = batch['video']
             fps = batch['fps']
-
-            # use max quality?
-            # token_counts = self.get_token_counts(orig)
-            token_range = self.config.model.titok.num_token_range
-            token_counts = [random.randrange(token_range[0], token_range[1]) for _ in range(len(orig))]
-
+            token_counts = batch['token_count']
 
             recon, _ = self.model(orig, token_counts)
             self.eval_metrics.update(recon, orig)
@@ -173,14 +163,14 @@ class TitokTrainer(L.LightningModule):
     def configure_optimizers(self):
         opt_conf_g = self.config.optimizer.titok
 
-        ###
-        exclude = (lambda n, p: p.ndim < 2 or "ln" in n or "bias" in n or 'latent_tokens' in n 
-            or 'mask_tokens' in n or 'norm' in n or 'gamma' in n or 'sigma' in n or 'positional_embedding' in n) # also include projections?
-        include = lambda n, p: not exclude(n, p)
-        named_parameters = list(self.model.named_parameters())
-        gain_or_bias_params = [p for n, p in named_parameters if exclude(n, p) and p.requires_grad]
-        rest_params = [p for n, p in named_parameters if include(n, p) and p.requires_grad]
-        ###
+        # ###
+        # exclude = (lambda n, p: p.ndim < 2 or "ln" in n or "bias" in n or 'latent_tokens' in n 
+        #     or 'mask_tokens' in n or 'norm' in n or 'gamma' in n or 'sigma' in n or 'positional_embedding' in n) # also include projections?
+        # include = lambda n, p: not exclude(n, p)
+        # named_parameters = list(self.model.named_parameters())
+        # gain_or_bias_params = [p for n, p in named_parameters if exclude(n, p) and p.requires_grad]
+        # rest_params = [p for n, p in named_parameters if include(n, p) and p.requires_grad]
+        # ###
 
         opt_g = optim.AdamW(
             self.model.parameters(),
@@ -276,7 +266,6 @@ if __name__ == '__main__':
         val_check_interval=config.training.eval.eval_step_interval,
         log_every_n_steps=config.general.wandb.log_step_interval,
         callbacks=[checkpoint_callback],
-        limit_val_batches=config.training.eval.num_eval//config.training.eval.batch_size,
     )
 
     model_trainer = TitokTrainer(config)

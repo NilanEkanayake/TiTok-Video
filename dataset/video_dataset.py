@@ -12,6 +12,7 @@ from torch.utils.data import DataLoader
 from huggingface_hub import HfFileSystem, hf_hub_url #, get_token
 import glob
 import random
+import math
 
 def convert_shards(shard_paths):
     out_paths = []
@@ -36,7 +37,27 @@ def custom_collate(batch): # list of chunks in? Don't collate past that?
     fps = [item['fps'] for item in batch]
     return {'video': chunks, 'fps': fps, '__key__': keys}
 
-def video_process(data, fps_range, min_grid, max_grid, patch_size, out_dtype=torch.bfloat16, eval=False):
+def video_process(data, config, eval=False):
+    cs = config.training.sampling
+
+    max_grid = cs.max_grid # THW
+    min_grid = cs.min_grid
+    fps_range = config.dataset.fps_range
+
+    patch_size = config.model.titok.patch_size # eg. [4, 8, 8]
+    
+    dtypes = {
+        '16': torch.float16,
+        '32': torch.float32,
+        '64': torch.float64,
+        'bf16': torch.bfloat16,
+    }
+
+    if config.training.main.precision == 'transformer-engine':
+        out_dtype = torch.bfloat16
+    else:
+        out_dtype = dtypes[config.training.main.precision.split('-')[0]]
+
     # verify sane grid settings
     assert all([dim % ps == 0 for dim, ps in zip(min_grid, patch_size)]) and all([dim % ps == 0 for dim, ps in zip(max_grid, patch_size)]), "dimensions in min_grid and max_grid must be evenly divisible by their respective patch size"
 
@@ -59,10 +80,11 @@ def video_process(data, fps_range, min_grid, max_grid, patch_size, out_dtype=tor
                         if all([x >= y for x, y in zip(in_grid, min_grid)]) and in_fps >= min_fps:
                             start_idx = 0
                             end_idx = 0
+
                             while True:
-                                # get chunk
                                 chunk_num_frames = random.randrange(min_grid[0], max_grid[0]+1, step=patch_size[0])
                                 chunk_fps = random.randrange(min_fps, min(max_fps, in_fps) + 1, step=1) # end is not inclusive, so +1?
+
                                 end_idx = start_idx + int(chunk_num_frames * (in_fps / chunk_fps))
 
                                 if in_grid[0] < end_idx: # end condition
@@ -70,21 +92,20 @@ def video_process(data, fps_range, min_grid, max_grid, patch_size, out_dtype=tor
 
                                 chunk_indices = np.linspace(start_idx, end_idx - 1, chunk_num_frames, dtype=int).tolist()
                                 chunk = torch.Tensor(vr.get_batch(chunk_indices))
-                                ###
-
-                                # resize chunk
+                                
 
                                 max_aspect_ratio = 16//8 # aka 2
                                 chunk_height = random.randrange(min_grid[1], min(max_grid[1], in_grid[1])+1, step=patch_size[1])
                                 # make sure the ratio check is multiple of patch_size - might be slightly over the max aspect ratio, doesn't matter
-                                min_width = max(min_grid[1], chunk_height//max_aspect_ratio - ((chunk_height//max_aspect_ratio) % patch_size[1]))
-                                max_width = min(max_grid[1], in_grid[1], int(chunk_height*max_aspect_ratio) - (int(chunk_height//max_aspect_ratio) % patch_size[1]))
-                                chunk_width = random.randrange(min_width, max_width+1, step=patch_size[1])
+                                width_error = (chunk_height//max_aspect_ratio) % patch_size[2]
+                                min_width = max(min_grid[2], chunk_height//max_aspect_ratio - width_error)
+                                max_width = min(max_grid[2], in_grid[2], int(chunk_height*max_aspect_ratio) - width_error)
+                                chunk_width = random.randrange(min_width, max_width+1, step=patch_size[2])
                                 
                                 if eval: # leave random resolution and frames in to see model's multi-res ability
                                     transform = v2.Compose([
                                         v2.Resize(size=max(chunk_height, chunk_width), interpolation=functional.InterpolationMode.BICUBIC, antialias=True),
-                                        v2.CenterCrop(size=(chunk_height, chunk_width))
+                                        v2.CenterCrop(size=(chunk_height, chunk_width)),
                                     ])
                                 else:
                                     transform = v2.Compose([
@@ -109,6 +130,59 @@ def video_process(data, fps_range, min_grid, max_grid, patch_size, out_dtype=tor
                     print(f'Decode fail: {error}')
 
 
+def dynamic_batching(data, config, eval=False):
+    patch_size = config.model.titok.patch_size
+    token_range = config.training.sampling.num_token_range
+    max_grid = config.training.sampling.max_grid # THW
+    max_samples = config.training.eval.num_eval
+
+    if eval:
+        max_seq_len = config.training.sampling.eval_seq_len
+    else:
+        max_seq_len = config.training.sampling.train_seq_len
+
+    assert math.prod(x//y for x, y in zip(max_grid, patch_size)) + token_range[1] <= max_seq_len, "max seq_len (max_grid/patch_size + token_range[1]) must be less than trg_seq_len"
+
+    chunks = []
+    token_counts = []
+    curr_seq_len = 0
+    seen_samples = 0
+
+    for sample in data:
+        grid_size = math.prod([x//y for x, y in zip(sample['video'].shape[1:], patch_size)]) # c|THW|
+        token_count = random.randrange(token_range[0], token_range[1]+1)
+
+        if eval:
+            if seen_samples > max_samples:
+                break # return?
+            else:
+                seen_samples += 1
+
+        if (curr_seq_len + grid_size + token_count) > max_seq_len:
+            # match the smaller videos with the shorter token counts.
+            chunks = sorted(chunks, key=lambda d: d['grid_size'])
+            token_counts = sorted(token_counts)
+
+            # reshuffle
+            tmp = list(zip(chunks, token_counts))
+            random.shuffle(tmp)
+            chunks, token_counts = zip(*tmp)
+
+            chunks = custom_collate(chunks)
+            chunks['token_count'] = token_counts
+
+            yield chunks # dynamic batch size, keeping under a target sequence length
+
+            chunks = []
+            token_counts = []
+            curr_seq_len = 0
+
+        curr_seq_len += grid_size + token_count
+        sample['grid_size'] = grid_size
+        chunks.append(sample)
+        token_counts.append(token_count)
+
+
 class WebdatasetVideoDataModule(pl.LightningModule):
     def __init__(self, config):
         super().__init__()
@@ -116,47 +190,25 @@ class WebdatasetVideoDataModule(pl.LightningModule):
         train_shard_path=cd.train_dataset
         eval_shard_path=cd.eval_dataset
 
-        max_grid = cd.max_grid # THW
-        min_grid = cd.min_grid
-        fps_range = config.dataset.fps_range
-
-        patch_size = config.model.titok.patch_size # eg. [4, 8, 8]
-
-        train_batch_size = config.training.main.batch_size
-        eval_batch_size = config.training.eval.batch_size
-
-        self.eval_samples = config.training.eval.num_eval
         self.num_workers = cd.workers
         self.pin_memory = cd.pin_memory
-
-        dtypes = {
-            '16': torch.float16,
-            '32': torch.float32,
-            '64': torch.float64,
-            'bf16': torch.bfloat16,
-        }
-
-        if config.training.main.precision == 'transformer-engine':
-            out_dtype = torch.bfloat16
-        else:
-            out_dtype = dtypes[config.training.main.precision.split('-')[0]]
 
         train_pipeline = [
             wds.ResampledShards(convert_shards(train_shard_path)), # no handler?
             wds.split_by_worker, # no overlapping entries between workers
             wds.tarfile_to_samples(handler=wds.warn_and_continue),
             wds.shuffle(8, handler=wds.warn_and_continue),
-            lambda data: video_process(data, fps_range, min_grid, max_grid, patch_size, out_dtype, eval=False),
+            lambda data: video_process(data, config, eval=False),
             wds.shuffle(64, handler=wds.warn_and_continue),
-            wds.batched(train_batch_size, partial=False, collation_fn=custom_collate),
+            lambda data: dynamic_batching(data, config, eval=False),
         ]
 
         eval_pipeline = [
             wds.SimpleShardList(convert_shards(eval_shard_path)),
             wds.split_by_worker,
             wds.tarfile_to_samples(handler=wds.warn_and_continue),
-            lambda data: video_process(data, fps_range, min_grid, max_grid, patch_size, out_dtype, eval=True),
-            wds.batched(eval_batch_size, partial=False, collation_fn=custom_collate),
+            lambda data: video_process(data, config, eval=True),
+            lambda data: dynamic_batching(data, config, eval=True),
         ]
         
         self.train_dataset = wds.DataPipeline(*train_pipeline)

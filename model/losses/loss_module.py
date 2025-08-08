@@ -6,6 +6,9 @@ import numpy as np
 
 from model.discriminator.vit_disc import ViTDiscriminator
 from model.metrics.lpips import LPIPS
+from torchvision.transforms import v2
+from torchvision.transforms.functional import InterpolationMode
+import random
 
 def zero_centered_grad_penalty(samples, critics):
     """Modified from https://github.com/brownvc/R3GAN"""
@@ -17,21 +20,21 @@ def zero_centered_grad_penalty(samples, critics):
 
 def l1(x, y):
     return torch.abs(x - y)
+
     
 class ReconstructionLoss(nn.Module):
     def __init__(self, config):
         super().__init__()
         self.config = config
-        
+        disc_conf = config.model.disc
+        ds_conf = config.dataset
+
+
         self.perceptual_weight = config.losses.recon.perceptual_weight
         if self.perceptual_weight > 0.0:
             self.perceptual_model = LPIPS().eval()
-
             for param in self.perceptual_model.parameters():
                 param.requires_grad = False
-
-        disc_conf = config.model.disc
-        ds_conf = config.dataset
 
         self.use_disc = config.losses.disc.use_disc
         self.disc_weight = config.losses.disc.disc_weight
@@ -58,6 +61,36 @@ class ReconstructionLoss(nn.Module):
         decay = 0.5 * (1 + np.cos(np.pi * global_step / self.total_steps))
         cur_value = self.base_gamma + (1 - decay) * (self.final_gamma - self.base_gamma)
         return float(np.where(global_step > self.total_steps, self.final_gamma, cur_value))
+    
+    def perceptual_preprocess(self, recon, target, resize_prob=0.25):
+        target_out = []
+        recon_out = []
+        sample_size = self.config.losses.recon.perceptual_sampling_size
+
+        for trg_frame, rec_frame in zip(target, recon):
+            # CHW in
+            rec_frame = rec_frame.clamp(-1, 1)
+
+            # random resize
+            H, W = trg_frame.shape[1:]
+            if (H < sample_size or W < sample_size) or random.random() < resize_prob:
+                trg_frame = v2.functional.resize(trg_frame, size=sample_size, interpolation=InterpolationMode.BICUBIC, antialias=False)
+                rec_frame = v2.functional.resize(rec_frame, size=sample_size, interpolation=InterpolationMode.BICUBIC, antialias=False)
+
+            H, W = trg_frame.shape[1:]
+            height_offset = random.randrange(0, (H-sample_size)+1) # no +1?
+            width_offset = random.randrange(0, (W-sample_size)+1)
+
+            trg_frame = trg_frame[:, height_offset:height_offset+sample_size, width_offset:width_offset+sample_size]
+            rec_frame = rec_frame[:, height_offset:height_offset+sample_size, width_offset:width_offset+sample_size]
+
+            target_out.append(trg_frame)
+            recon_out.append(rec_frame)
+
+        target = torch.stack(target_out, dim=0).contiguous() # now FCHW
+        recon = torch.stack(recon_out, dim=0).contiguous()
+        return recon, target
+
 
     def forward(self, target, recon, global_step, results_dict=None, disc_forward=False):
         if disc_forward:
@@ -79,33 +112,26 @@ class ReconstructionLoss(nn.Module):
 
         perceptual_loss = 0.0
         if self.perceptual_weight > 0.0:
-            target_padded = []
-            recon_padded = []
-            max_grid = self.config.dataset.max_grid
-            for i in range(len(target)):
-                padding = nn.ZeroPad2d((max_grid[2]-target[i].shape[3], 0, max_grid[1]-target[i].shape[2], 0)) # H and W padding is applied backwards
-                target_padded.append(padding(target[i].transpose(0, 1))) # CTHW -> TCHW
-                recon_padded.append(padding(recon[i].transpose(0, 1)))
-            target_padded = torch.cat(target_padded, dim=0).contiguous() # now (BT)CHW
-            recon_padded = torch.cat(recon_padded, dim=0).contiguous().clamp(-1, 1) # now (BT)CHW
+            num_subsample = self.config.losses.recon.perceptual_samples_per_batch
 
-            # since B and T are all mixed up now, just get total num to randomly sample across the entire (BT) dim. The next best would be a subsample percent of the frames in each sequence.
-            num_subsample = self.config.losses.recon.perceptual_subsample_per_batch
-            if num_subsample != -1:
-                # sample num_subsample frames along dim 0 of target and recon (same indices for each)
-                # then calculate the perceptual loss over than (num_subsample)CHW tensor.
-                total_frames = target_padded.shape[0]
-                if num_subsample < total_frames:
-                    indices = torch.randperm(total_frames)[:num_subsample]
-                    target_subsampled = target_padded[indices]
-                    recon_subsampled = recon_padded[indices]
-                    perceptual_loss = self.perceptual_model(recon_subsampled, target_subsampled).mean()
-                else:
-                    perceptual_loss = self.perceptual_model(recon_padded, target_padded).mean()
-            else:
-                perceptual_loss = self.perceptual_model(recon_padded, target_padded).mean() #.view(B, -1).mean(1) # [B]
+            target_frames = []
+            recon_frames = []
+            for trg_vid, rec_vid in zip(target, recon):
+                target_frames += trg_vid.unbind(1) # unbind T dim
+                recon_frames += rec_vid.unbind(1)
 
-            # perceptual_loss = self.perceptual_model(recon, target).mean()
+            if num_subsample != -1 and num_subsample < len(target_frames):                
+                # shuffle identically
+                tmp = list(zip(target_frames, recon_frames))
+                random.shuffle(tmp)
+                target_frames, recon_frames = zip(*tmp)
+
+                target_frames = target_frames[:num_subsample]
+                recon_frames = recon_frames[:num_subsample]
+
+            recon_frames, target_frames = self.perceptual_preprocess(recon_frames, target_frames)
+            perceptual_loss = self.perceptual_model(recon_frames, target_frames).mean()
+
             loss_dict['perceptual_loss'] = perceptual_loss
 
         # adversarial loss - not adapted yet, will need to use ViT for nested support?

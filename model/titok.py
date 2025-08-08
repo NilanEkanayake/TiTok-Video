@@ -60,14 +60,15 @@ class TiTok(nn.Module):
     def encode(self, x, token_counts):
         x = self.encoder(x, token_counts)
         x_q, x_dict = self.quantize(x)
+        x_dict['indices'] = torch.split(x_dict['indices'], token_counts, dim=0) # [B*L] -> [B, L]
         return x_q, x_dict
     
-    def decode(self, x, grids):
-        x = self.decoder(x, grids)
+    def decode(self, x, token_counts, grids):
+        x = self.decoder(x, token_counts, grids)
         return x
     
     def forward(self, x, token_counts):
         grids = [vid.shape[1:] for vid in x] # c|THW|
-        x_q, out_dict = self.encode(x, token_counts)        
-        x = self.decode(x_q, grids)
+        x_q, out_dict = self.encode(x, token_counts)
+        x = self.decode(x_q, token_counts, grids)
         return x, out_dict

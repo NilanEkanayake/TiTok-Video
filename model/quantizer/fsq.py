@@ -121,9 +121,7 @@ class FSQ(Module):
         return codes
     
     @torch.compiler.disable()
-    def forward(self, z): # BLC in, nested tensor?
-        # z = rearrange(z, 'b n (c d) -> b n c d', c = 1)
-        # z = z.unsqueeze(-1)
+    def forward(self, z): # (B*L)C in
 
         with torch.autocast(z.device.type, enabled=False):
             orig_dtype = z.dtype
@@ -132,12 +130,6 @@ class FSQ(Module):
             codes = self.quantize(z)
             indices = self.codes_to_indices(codes)
 
-            # codes = rearrange(codes, 'b n c d -> b n (c d)')
-            # codes = codes.squeeze(-1)
-
             codes = codes.to(orig_dtype)
-
-        # if not self.keep_num_codebooks_dim and self.return_indices:
-        #     indices = maybe(rearrange)(indices, '... 1 -> ...')
 
         return codes, {'indices': indices}
