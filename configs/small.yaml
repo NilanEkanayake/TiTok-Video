@@ -1,7 +1,7 @@
 general:
     wandb:
-        project: pixel_titok_video_10
-        run_name: sub3LPIPS-BS32-small_thin-full_multires-verify
+        project: pixel_titok_video_11
+        run_name: sub96LPIPS-SL128k-small_thin-multires
         log_step_interval: 50
 
     checkpoints:
@@ -19,7 +19,6 @@ model:
         encoder_size: small_thin
         decoder_size: small_thin
 
-        num_token_range: [64, 1024] # token counts are randomly sampled from this range for each video during training.
         fsq_levels: [7, 7, 7, 5, 5] # CB size: 8575
 
     disc:
@@ -29,7 +28,8 @@ model:
 losses:
     recon:
         perceptual_weight: 1.0
-        perceptual_subsample_per_batch: 96 # Use -1 to sample all.
+        perceptual_samples_per_step: 96
+        perceptual_sampling_size: 192
 
     disc:
         use_disc: False
@@ -47,14 +47,10 @@ dataset:
     train_dataset: "hf://datasets/NilanE/Vchitect_T2V_DataVerse_256p_8fps_wds/shards/*.tar" # "hf://datasets/Vchitect/Vchitect_T2V_DataVerse/**/*.tar"
     eval_dataset: "03.tar" # "hf://datasets/facebook/PE-Video/test/*.tar"
 
-    # videos are sampled between min and max dimensions during training.
-    max_grid: [32, 256, 256]
-    min_grid: [8, 64, 64]
-
-    fps_range: [3, 10]
+    fps_range: [3, 8]
 
     workers: 8
-    pin_memory: True
+    pin_memory: False
 
 optimizer:
     titok:
@@ -74,9 +70,18 @@ optimizer:
         end_lr: 2e-7
 
 training:
+    sampling:
+        num_token_range: [128, 896]
+        min_grid: [8, 128, 128]
+        max_grid: [24, 384, 384]
+
+        # seq_len is similar to batch size, but raw token count.
+        # Set as much as the GPU can handle. The dataloader will try to target this value, but never exceed.
+        train_seq_len: 128000
+        eval_seq_len: 16384
+        
     main:
         max_steps: 600000
-        batch_size: 32
         precision: bf16-mixed
         accelerator: 'gpu'
         train_devices: 1
@@ -89,7 +94,6 @@ training:
     eval:
         eval_step_interval: 500
         num_eval: 128
-        batch_size: 16
 
         log_codebook: True
         log_jedi: False

@@ -112,7 +112,7 @@ class ReconstructionLoss(nn.Module):
 
         perceptual_loss = 0.0
         if self.perceptual_weight > 0.0:
-            num_subsample = self.config.losses.recon.perceptual_samples_per_batch
+            num_subsample = self.config.losses.recon.perceptual_samples_per_step
 
             target_frames = []
             recon_frames = []
