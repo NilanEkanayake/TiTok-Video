@@ -1,179 +1,179 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from einops import einsum, rearrange, reduce
-from typing import Tuple, Union, List
+
 import math
+from typing import Any, Dict, List, Optional, Tuple, Union
 import numpy as np
 
+from einops import einsum, rearrange, reduce
 
-def get_1d_rotary_pos_embed(
-    dim: int,
-    pos: Union[np.ndarray, int],
-    theta: float = 10000.0,
-    freqs_dtype=torch.float32,  #  torch.float32, torch.float64 (flux)
-):
+"""
+References:
+https://github.com/huggingface/diffusers/blob/main/src/diffusers/models/transformers/transformer_ltx.py
+https://github.com/huggingface/diffusers/blob/main/src/diffusers/models/transformers/transformer_lumina2.py
+https://github.com/huggingface/diffusers/blob/main/src/diffusers/models/embeddings.py
+"""
+
+def apply_rotary_emb(x, freqs_cis):
+    with torch.autocast(x.device.type, enabled=False):
+        x_rotated = torch.view_as_complex(x.float().reshape(*x.shape[:-1], -1, 2))
+        freqs_cis = freqs_cis.unsqueeze(-2) # unsqueeze head dim -> [L, H, D]
+        x_out = torch.view_as_real(x_rotated * freqs_cis).flatten(-2)
+
+    return x_out.type_as(x)
+
+
+def get_1d_rotary_pos_embed(dim, pos, theta=10000.0, freqs_dtype=torch.float64): 
     assert dim % 2 == 0
 
-    if isinstance(pos, int):
+    if type(pos) is int:
         pos = torch.arange(pos)
-    if isinstance(pos, np.ndarray):
-        pos = torch.from_numpy(pos)  # type: ignore  # [S]
 
-    freqs = (1.0 / (theta ** (torch.arange(0, dim, 2, dtype=freqs_dtype, device=pos.device) / dim)))  # [D/2]
-    freqs = torch.outer(pos, freqs)  # type: ignore   # [S, D/2]
+    start = 1.0
+    end = theta
 
-    # flux, hunyuan-dit, cogvideox
-    freqs_cos = freqs.cos().repeat_interleave(2, dim=1, output_size=freqs.shape[1] * 2).float()  # [S, D]
-    freqs_sin = freqs.sin().repeat_interleave(2, dim=1, output_size=freqs.shape[1] * 2).float()  # [S, D]
-    return freqs_cos, freqs_sin
+    freqs = theta ** torch.linspace(
+        math.log(start, theta), # 0.0?
+        math.log(end, theta), # 1.0?
+        dim//2,
+        device=pos.device,
+        dtype=freqs_dtype,
+    )
+    freqs = freqs * math.pi / 2.0
+    freqs = freqs * pos.unsqueeze(-1)
+    freqs_cis = torch.polar(torch.ones_like(freqs), freqs)
+    return freqs_cis
     
 
-def apply_rotary_emb(x, freqs):
-    dtype = x.dtype
-    cos, sin = freqs
-
-    with torch.autocast(x.device.type, enabled=False):
-        x = x.contiguous().float()
-        cos = cos.contiguous().float().unsqueeze(-2) # unsqueeze head dim
-        sin = sin.contiguous().float().unsqueeze(-2)
-        
-        x_real, x_imag = x.chunk(2, dim=-1)
-        x_rotated = torch.cat([-x_imag, x_real], dim=-1).contiguous().float()
-        out = (x * cos + x_rotated * sin)
-        out = out.to(dtype)
-
-    return out
-
-class RotaryPosEmbed(nn.Module):
+class Lumina2RotaryPosEmbed(nn.Module):
     def __init__(
-        self,
-        axes_dim: List[int] = (20, 22, 22),
-        theta: float = 10000.0,
-    ) -> None:
+            self,
+            theta: float = 10000.0,
+            axes_dim: List[int] = (24, 20, 20),
+            axes_lens: Optional[List[int]] = None,
+        ):
         super().__init__()
-
         self.theta = theta
         self.axes_dim = axes_dim
+        self.axes_lens = axes_lens
+
+        if self.axes_lens is not None:
+            self.freqs_cis = self._precompute_freqs_cis(axes_dim, axes_lens, theta)
+
+    def _precompute_freqs_cis(self, axes_dim: List[int], axes_lens: List[int], theta: int) -> List[torch.Tensor]:
+        freqs_cis = []
+        for d, e in zip(axes_dim, axes_lens):
+            emb = get_1d_rotary_pos_embed(d, e, theta=theta)
+            freqs_cis.append(emb)
+        return freqs_cis
+
+    def _get_precomputed_freqs_cis(self, ids: torch.Tensor) -> torch.Tensor:
+        device = ids.device
+
+        result = []
+        for i in range(len(self.axes_dim)):
+            freqs = self.freqs_cis[i].to(ids.device)
+            index = ids[:, i : i + 1].repeat(1, freqs.shape[-1])
+            result.append(torch.gather(freqs, dim=0, index=index))
+        return torch.cat(result, dim=-1).to(device)
+    
+    def _get_freqs_cis(self, ids: torch.Tensor) -> torch.Tensor:
+        device = ids.device
+
+        result = []
+        for i in range(len(self.axes_dim)):
+            freqs = get_1d_rotary_pos_embed(self.axes_dim[i], ids[:, i], theta=self.theta).to(ids.device)
+            result.append(freqs)
+        return torch.cat(result, dim=-1).to(device)
 
 
-    def compute_grid(self, in_grid, num_tokens, device):
+    def forward(self, in_grid: Tuple[int, int, int], num_tokens: int, device: str):
         frames, height, width = in_grid
-        seq_len = math.prod(in_grid) + num_tokens # same as max_seq_len
+        seq_len = math.prod(in_grid) + num_tokens
 
         # Create position IDs -> [L, 3], all zeros. 3 = [frames, height, width]. Tokens are packed into THW dims like orig m-rope.
-        position_ids = torch.zeros(seq_len, len(in_grid), dtype=torch.float32, device=device)
-        position_ids[:num_tokens] = torch.arange(num_tokens, dtype=torch.float32, device=device).unsqueeze(-1) # assign to THW dims.
+        position_ids = torch.zeros(seq_len, len(in_grid), dtype=torch.int64, device=device)
+        position_ids[:num_tokens] = torch.arange(num_tokens, dtype=torch.int64, device=device).unsqueeze(-1) # assign to THW dims.
 
         # add THW position ids
         position_ids[num_tokens:, 0] = ( # frames
-            torch.arange(frames, dtype=torch.float64, device=device)
+            torch.arange(frames, dtype=torch.int64, device=device)
             .view(-1, 1, 1)
             .repeat(1, height, width)
             .flatten()
         )
 
         position_ids[num_tokens:, 1] = ( # height
-            torch.arange(height, dtype=torch.float64, device=device)
+            torch.arange(height, dtype=torch.int64, device=device)
             .view(1, -1, 1)
             .repeat(frames, 1, width)
             .flatten()
         )
 
         position_ids[num_tokens:, 2] = ( # width
-            torch.arange(width, dtype=torch.float64, device=device)
+            torch.arange(width, dtype=torch.int64, device=device)
             .view(1, 1, -1)
             .repeat(frames, height, 1)
             .flatten()
         )
 
-        position_ids[num_tokens:] += num_tokens
+        position_ids[num_tokens:] += num_tokens # offset THW to increment from 1D enc
 
-        return position_ids
+        if self.axes_lens is not None and self.training:
+            freqs_cis = self._get_precomputed_freqs_cis(position_ids) # use precomputed
+        else:
+            freqs_cis = self._get_freqs_cis(position_ids)
 
-
-    def forward(
-        self,
-        in_grid: Tuple[int, ...],
-        num_tokens: int,
-        device,
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
-                
-        grid = self.compute_grid(in_grid, num_tokens, device)
-
-        # freqs_t = get_1d_rotary_pos_embed(self.axes_dim[0], grid[:, 0], theta=self.theta, freqs_dtype=torch.float64)
-        # freqs_h = get_1d_rotary_pos_embed(self.axes_dim[1], grid[:, 1], theta=self.theta, freqs_dtype=torch.float64)
-        # freqs_w = get_1d_rotary_pos_embed(self.axes_dim[2], grid[:, 2], theta=self.theta, freqs_dtype=torch.float64)
-
-        # cos_freqs = torch.cat([freqs_t[0], freqs_h[0], freqs_w[0]], dim=-1)
-        # sin_freqs = torch.cat([freqs_t[1], freqs_h[1], freqs_w[1]], dim=-1)
-
-        start = 1.0
-        end = self.theta
-        freqs = self.theta ** torch.linspace(
-            math.log(start, self.theta), # 0.0
-            math.log(end, self.theta), # 1.0
-            sum(self.axes_dim) // (2 * grid.shape[-1]),
-            device=device,
-            dtype=torch.float64,
-        )
-        freqs = freqs * math.pi / 2.0
-        freqs = freqs * grid.unsqueeze(-1)
-        freqs = freqs.transpose(-1, -2).flatten(1)
-        
-        cos_freqs = freqs.cos().repeat_interleave(2, dim=-1)
-        sin_freqs = freqs.sin().repeat_interleave(2, dim=-1)
-
-        padding_dim = sum(self.axes_dim) % (2 * grid.shape[-1])
-        if padding_dim != 0:
-            cos_padding = torch.ones_like(cos_freqs[:, : padding_dim])
-            sin_padding = torch.zeros_like(cos_freqs[:, : padding_dim])
-            cos_freqs = torch.cat([cos_padding, cos_freqs], dim=-1)
-            sin_freqs = torch.cat([sin_padding, sin_freqs], dim=-1)
-
-        return cos_freqs, sin_freqs
+        return freqs_cis
 
 
 class RoPE(nn.Module):
     def __init__(
             self,
-            dim=None,
+            theta=10000.0,
+            head_dim=64,
+            max_grid=[16, 64, 64],
+            max_tokens=2048,
         ):
         super(RoPE, self).__init__()
-        self.pos_emb = RotaryPosEmbed()
-        
-    
+        axes_dim = head_dim/len(max_grid)
+        axes_dim = [int(axes_dim - (axes_dim % 2))] * len(max_grid)
+        axes_dim[0] += head_dim - sum(axes_dim) # add remainder to T dim
+
+        axes_lens = [x + max_tokens for x in max_grid]
+
+        self.pos_emb = Lumina2RotaryPosEmbed(theta, axes_dim, axes_lens)
+
+
     def forward(self, grids, token_counts, device):
         with torch.autocast(device.type, enabled=False):
-            all_cos = []
-            all_sin = []
+            freqs = []
             for grid, token_count in zip(grids, token_counts):
-                cos, sin = self.pos_emb(grid, token_count, device)
-                all_cos.append(cos)
-                all_sin.append(sin)
+                freqs.append(self.pos_emb(grid, token_count, device))
 
-            cos = torch.cat(all_cos, dim=0) # [B*L, C]
-            sin = torch.cat(all_sin, dim=0)
+            freqs = torch.cat(freqs, dim=0) # [B*L, C]
 
-        return cos, sin
+        return freqs
     
 
 if __name__ == '__main__':
     B = 1
     D = 512
     H = 8
+
+    # 
     
     IN_GRID = (2, 4, 4) # T, H, W
     NUM_TOKENS = 16
-    SEQ_LEN = math.prod(IN_GRID) + NUM_TOKENS
+    SEQ_LEN = (math.prod(IN_GRID) + NUM_TOKENS) * B
 
-    rope = RoPE(D)
+    rope = RoPE()
 
-    x = torch.randn(B*SEQ_LEN, H, D//H)
-    freqs = rope([IN_GRID], [NUM_TOKENS], x.device)
+    x = torch.randn(SEQ_LEN, H, D//H) # LHD
 
-    print(x.shape)
-    print(freqs[0].shape)
+    freqs = rope([IN_GRID], [NUM_TOKENS], x.device) # torch.Size([1, 8, 48, 64])
+    print(freqs.shape)
 
     x = apply_rotary_emb(x, freqs)
     print(x.shape)

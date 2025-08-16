@@ -40,14 +40,13 @@ losses:
         disc_weight_warmup_steps: 1
 
         every_n: 7 # num encoder steps between discriminator steps
-        base_gamma: 500.0
-        final_gamma: 50.0
+        lecam_weight: 0.001
 
 dataset:
     train_dataset: "hf://datasets/NilanE/Vchitect_T2V_DataVerse_256p_8fps_wds/shards/*.tar" # "hf://datasets/Vchitect/Vchitect_T2V_DataVerse/**/*.tar"
     eval_dataset: "03.tar" # "hf://datasets/facebook/PE-Video/test/*.tar"
 
-    fps_range: [3, 8]
+    fps_range: [4, 8]
 
     workers: 8
     pin_memory: False
@@ -73,13 +72,13 @@ training:
     sampling:
         num_token_range: [128, 896]
         min_grid: [8, 128, 128]
-        max_grid: [24, 384, 384]
+        max_grid: [24, 256, 256]
 
         # seq_len is similar to batch size, but raw token count.
         # Set as much as the GPU can handle. The dataloader will try to target this value, but never exceed.
-        train_seq_len: 128000
+        train_seq_len: 131072
         eval_seq_len: 16384
-        
+
     main:
         max_steps: 600000
         precision: bf16-mixed

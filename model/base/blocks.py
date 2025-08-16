@@ -22,7 +22,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from model.base.transformer import ResidualAttentionBlock
-from model.base.sigma_reparam import SNLinear
+# from model.base.sigma_reparam import SNLinear
 
 from model.base.rope import RoPE
 
@@ -64,6 +64,21 @@ def get_model_dims(model_size='tiny', head_dim=64, mlp_ratio=4.0):
     width = int(head_dim*heads[0])
 
     return width, layers, heads, mlp_ratio
+
+
+def init_weights(module):
+    if isinstance(module, nn.Linear): # SNLinear has internal init.
+        module.weight.data = nn.init.trunc_normal_(module.weight.data, mean=0.0, std=0.02)
+        if module.bias is not None:
+            nn.init.constant_(module.bias, 0)
+    elif isinstance(module, nn.LayerNorm):
+        if module.bias is not None:
+            nn.init.constant_(module.bias, 0)
+        if module.weight is not None:
+            nn.init.constant_(module.weight, 1.0)
+    elif isinstance(module, nn.Conv3d) or isinstance(module, nn.Conv2d):
+        nn.init.xavier_uniform_(module.weight)
+        nn.init.zeros_(module.bias)
         
     
 class TiTokEncoder(nn.Module):
@@ -73,6 +88,8 @@ class TiTokEncoder(nn.Module):
             patch_size=(4, 8, 8),
             in_channels=3,
             out_channels=5,
+            max_grid=(16, 64, 64),
+            max_tokens=2048,
         ):
         super().__init__()
         self.patch_size = patch_size
@@ -82,11 +99,14 @@ class TiTokEncoder(nn.Module):
         self.width, self.num_layers, self.heads, mlp_ratio = get_model_dims(model_size)
         scale = self.width ** -0.5
 
-        self.rope = RoPE(self.width)
+        self.rope = RoPE(
+            head_dim=self.width//self.heads[0],
+            max_grid=[x//y for x, y in zip(max_grid, patch_size)],
+            max_tokens=max_tokens,
+        )
 
         self.mask_token = nn.Parameter(scale * torch.randn(1, self.width)) # LC
-
-        self.proj_in = SNLinear(in_features=in_channels*math.prod(patch_size), out_features=self.width)
+        self.proj_in = nn.Linear(in_features=in_channels*math.prod(patch_size), out_features=self.width)
 
         self.model_layers = ResidualAttentionBlock(
             embed_dim=self.width,
@@ -96,7 +116,7 @@ class TiTokEncoder(nn.Module):
         )
 
         self.ln_post = nn.LayerNorm(self.width)
-        self.proj_out = SNLinear(self.width, self.token_size, bias=True)
+        self.proj_out = nn.Linear(self.width, self.token_size, bias=True)
 
     def forward(self, x, token_counts):
         device = x[0].device
@@ -136,6 +156,8 @@ class TiTokDecoder(nn.Module):
             patch_size=(4, 8, 8),
             in_channels=5,
             out_channels=3,
+            max_grid=(16, 64, 64),
+            max_tokens=2048,
         ):
         super().__init__()
         self.patch_size = patch_size
@@ -145,11 +167,14 @@ class TiTokDecoder(nn.Module):
         self.width, self.num_layers, self.heads, mlp_ratio = get_model_dims(model_size)
         scale = self.width ** -0.5
 
-        self.rope = RoPE(self.width)
+        self.rope = RoPE(
+            head_dim=self.width//self.heads[0],
+            max_grid=[x//y for x, y in zip(max_grid, patch_size)],
+            max_tokens=max_tokens,
+        )
 
         self.mask_token = nn.Parameter(scale * torch.randn(1, self.width)) # LC
-
-        self.proj_in = SNLinear(self.token_size, self.width, bias=True)
+        self.proj_in = nn.Linear(self.token_size, self.width, bias=True)
         self.ln_pre = nn.LayerNorm(self.width)
 
         self.model_layers = ResidualAttentionBlock(
@@ -159,7 +184,7 @@ class TiTokDecoder(nn.Module):
             num_layer=self.num_layers
         )
 
-        self.proj_out = SNLinear(in_features=self.width, out_features=out_channels*math.prod(patch_size))
+        self.proj_out = nn.Linear(in_features=self.width, out_features=out_channels*math.prod(patch_size))
 
 
     def forward(self, x, token_counts, grids):

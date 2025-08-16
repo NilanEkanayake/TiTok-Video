@@ -4,31 +4,43 @@ import torch.nn.functional as F
 from einops import rearrange
 import numpy as np
 
-from model.discriminator.vit_disc import ViTDiscriminator
+from model.base.blocks import TiTokEncoder, init_weights
 from model.metrics.lpips import LPIPS
 from torchvision.transforms import v2
 from torchvision.transforms.functional import InterpolationMode
 import random
 
-def zero_centered_grad_penalty(samples, critics):
-    """Modified from https://github.com/brownvc/R3GAN"""
-    gradients = []
-    for sample, critic in zip(samples, critics):
-        gradient, = torch.autograd.grad(outputs=critic.sum(), inputs=sample, create_graph=True)
-        gradients.append(gradient.square().sum()) # .square() applies element-wise, should be fine here.
-    return torch.stack(gradients, dim=0) # [B, 1] out?
 
 def l1(x, y):
     return torch.abs(x - y)
+
+# https://github.com/bytedance/1d-tokenizer/blob/main/modeling/modules/losses.py
+def compute_lecam_loss(
+    logits_real_mean: torch.Tensor,
+    logits_fake_mean: torch.Tensor,
+    ema_logits_real_mean: torch.Tensor,
+    ema_logits_fake_mean: torch.Tensor
+) -> torch.Tensor:
+    """Computes the LeCam loss for the given average real and fake logits.
+
+    Args:
+        logits_real_mean -> torch.Tensor: The average real logits.
+        logits_fake_mean -> torch.Tensor: The average fake logits.
+        ema_logits_real_mean -> torch.Tensor: The EMA of the average real logits.
+        ema_logits_fake_mean -> torch.Tensor: The EMA of the average fake logits.
+
+    Returns:
+        lecam_loss -> torch.Tensor: The LeCam loss.
+    """
+    lecam_loss = torch.mean(torch.pow(F.relu(logits_real_mean - ema_logits_fake_mean), 2))
+    lecam_loss += torch.mean(torch.pow(F.relu(ema_logits_real_mean - logits_fake_mean), 2))
+    return lecam_loss
 
     
 class ReconstructionLoss(nn.Module):
     def __init__(self, config):
         super().__init__()
         self.config = config
-        disc_conf = config.model.disc
-        ds_conf = config.dataset
-
 
         self.perceptual_weight = config.losses.recon.perceptual_weight
         if self.perceptual_weight > 0.0:
@@ -41,26 +53,26 @@ class ReconstructionLoss(nn.Module):
         self.disc_start = config.losses.disc.disc_start
 
         if self.use_disc:
-            self.disc_model = ViTDiscriminator(
-                model_size=disc_conf.model_size,
-                patch_size=disc_conf.patch_size,
-                out_tokens=1,
+            self.disc_model = TiTokEncoder( # same arch as tokenizer encoder
+                model_size=config.model.disc.model_size,
+                patch_size=config.model.disc.patch_size,
                 in_channels=3,
-                out_channels=16, # more stable to use more channels?
-            )
+                out_channels=1, # more stable to use more channels?
+                max_grid=config.training.sampling.max_grid,
+                max_tokens=config.training.sampling.num_token_range[1],
+            ).apply(init_weights)
 
             if config.training.main.torch_compile:
                 self.disc_model = torch.compile(self.disc_model)
 
-            self.base_gamma = config.losses.disc.base_gamma
-            self.final_gamma = config.losses.disc.final_gamma
+            self.lecam_weight = config.losses.disc.lecam_weight
+            self.lecam_decay = config.losses.disc.get("lecam_decay", 0.999)
+            if self.lecam_weight > 0.0:
+                self.register_buffer("ema_real_logits_mean", torch.zeros((1)))
+                self.register_buffer("ema_fake_logits_mean", torch.zeros((1)))
 
         self.total_steps = config.training.main.max_steps
-    
-    def cosine_decay(self, global_step):
-        decay = 0.5 * (1 + np.cos(np.pi * global_step / self.total_steps))
-        cur_value = self.base_gamma + (1 - decay) * (self.final_gamma - self.base_gamma)
-        return float(np.where(global_step > self.total_steps, self.final_gamma, cur_value))
+
     
     def perceptual_preprocess(self, recon, target, resize_prob=0.25):
         target_out = []
@@ -97,6 +109,7 @@ class ReconstructionLoss(nn.Module):
             return self._forward_discriminator(target, recon, global_step)
         else:
             return self._forward_generator(target, recon, global_step, results_dict)
+        
 
     def _forward_generator(self, target, recon, global_step, results_dict=None):
         # target and recon are now lists of CTHW tensors.
@@ -146,8 +159,8 @@ class ReconstructionLoss(nn.Module):
                 param.requires_grad = False
             ############################
 
-            logits_real = self.disc_model(target).view(B, -1).mean(1) # [B]
-            logits_fake = self.disc_model(recon).view(B, -1).mean(1)
+            logits_real = self.disc_model(target, token_counts=[1]*B).view(B, -1).mean(1)
+            logits_fake = self.disc_model(recon, token_counts=[1]*B).view(B, -1).mean(1)
 
             logits_relative = logits_fake - logits_real
             g_loss = F.softplus(-logits_relative)
@@ -166,6 +179,7 @@ class ReconstructionLoss(nn.Module):
             
         return total_loss, {'train/'+k:v.clone().mean().detach() for k,v in loss_dict.items()}
     
+    
     def _forward_discriminator(self, target, recon, global_step):
         loss_dict = {}
         
@@ -179,27 +193,31 @@ class ReconstructionLoss(nn.Module):
             param.requires_grad = True
         ############################
 
-        logits_real = self.disc_model(target).view(B, -1).mean(1)
-        logits_fake = self.disc_model(recon).view(B, -1).mean(1)
+        logits_real = self.disc_model(target, token_counts=[1]*B).view(B, -1).mean(1) # model out = [B*L, C] or [B*1, 1]
+        logits_fake = self.disc_model(recon, token_counts=[1]*B).view(B, -1).mean(1)
 
         # disc model outputs normal dense tensor
-
-        # # https://github.com/brownvc/R3GAN
-        # r1_penalty = zero_centered_grad_penalty(target, logits_real)
-        # r2_penalty = zero_centered_grad_penalty(recon, logits_fake)
  
         logits_relative = logits_real - logits_fake
-        
-        # gamma = self.cosine_decay(global_step)
-        # disc_loss = (F.softplus(-logits_relative) + (gamma / 2) * (r1_penalty + r2_penalty)).mean()
-        disc_loss = F.softplus(-logits_relative).mean()
+
+        lecam_loss = 0.0
+        if self.lecam_weight > 0.0:
+            lecam_loss = compute_lecam_loss(
+                logits_real.mean(),
+                logits_fake.mean(),
+                self.ema_real_logits_mean,
+                self.ema_fake_logits_mean
+            )
+            self.ema_real_logits_mean = self.ema_real_logits_mean * self.lecam_decay + logits_real.clone().mean().detach() * (1 - self.lecam_decay)
+            self.ema_fake_logits_mean = self.ema_fake_logits_mean * self.lecam_decay + logits_fake.clone().mean().detach() * (1 - self.lecam_decay)
+            loss_dict['lecam_loss'] = lecam_loss
+
+        disc_loss = F.softplus(-logits_relative).mean() + self.lecam_weight * lecam_loss
         
         loss_dict.update({
             "disc_loss": disc_loss,
             "logits_real": logits_real,
             "logits_fake": logits_fake,
-            # "r1_penalty": r1_penalty,
-            # "r2_penalty": r2_penalty,
         })
             
         return disc_loss, {'train/'+k:v.clone().mean().detach() for k,v in loss_dict.items()}

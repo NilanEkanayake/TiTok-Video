@@ -16,7 +16,7 @@ limitations under the License.
 """
 import torch
 import torch.nn as nn
-from model.base.blocks import TiTokEncoder, TiTokDecoder
+from model.base.blocks import TiTokEncoder, TiTokDecoder, init_weights
 from model.quantizer.fsq import FSQ
 
 class TiTok(nn.Module):
@@ -32,6 +32,8 @@ class TiTok(nn.Module):
             patch_size=titok_conf.patch_size,
             in_channels=3,
             out_channels=token_size,
+            max_grid=self.config.training.sampling.max_grid,
+            max_tokens=self.config.training.sampling.num_token_range[1],
         )
         self.quantize = FSQ(levels=titok_conf.fsq_levels)
         self.decoder = TiTokDecoder(
@@ -39,23 +41,11 @@ class TiTok(nn.Module):
             patch_size=titok_conf.patch_size,
             in_channels=token_size,
             out_channels=3,
+            max_grid=self.config.training.sampling.max_grid,
+            max_tokens=self.config.training.sampling.num_token_range[1],
         )
 
-        self.apply(self._init_weights)
-
-    def _init_weights(self, module):
-        if isinstance(module, nn.Linear): # SNLinear has internal init.
-            module.weight.data = nn.init.trunc_normal_(module.weight.data, mean=0.0, std=0.02)
-            if module.bias is not None:
-                nn.init.constant_(module.bias, 0)
-        elif isinstance(module, nn.LayerNorm):
-            if module.bias is not None:
-                nn.init.constant_(module.bias, 0)
-            if module.weight is not None:
-                nn.init.constant_(module.weight, 1.0)
-        elif isinstance(module, nn.Conv3d) or isinstance(module, nn.Conv2d):
-            nn.init.xavier_uniform_(module.weight)
-            nn.init.zeros_(module.bias)
+        self.apply(init_weights)
 
     def encode(self, x, token_counts):
         x = self.encoder(x, token_counts)

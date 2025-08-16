@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from model.base.sigma_reparam import SNLinear
+# from model.base.sigma_reparam import SNLinear
 from flash_attn import flash_attn_varlen_func
 
 from model.base.rope import apply_rotary_emb
@@ -24,11 +24,11 @@ def ffd(dim, mult=4, mult_of=32, dropout=0.):
     inner_dim = mult_of * ((inner_dim + mult_of - 1) // mult_of)
     return nn.Sequential(
         nn.LayerNorm(dim),
-        SNLinear(dim, inner_dim * 2, bias=False),
+        nn.Linear(dim, inner_dim * 2, bias=False),
         GEGLU(),
         nn.Dropout(dropout),
-        SNLinear(inner_dim, dim, bias=False),
-        nn.LayerNorm(dim), # another LN to fix instability
+        nn.Linear(inner_dim, dim, bias=False),
+        # nn.LayerNorm(dim), # another LN to fix instability
     )
 
 class Attn(nn.Module):
@@ -39,13 +39,14 @@ class Attn(nn.Module):
         self.head_dim = dim//self.q_heads
         self.gqa_dim = self.head_dim * self.kv_heads
 
+        self.pre_ln = nn.LayerNorm(dim)
         self.to_qkv = nn.Linear(dim, self.gqa_dim * 2 + dim, bias=False)
-        self.out_proj = nn.Linear(dim, dim, bias=False)
-
         self.q_norm = nn.LayerNorm(self.head_dim)
         self.k_norm = nn.LayerNorm(self.head_dim)
+        self.out_proj = nn.Linear(dim, dim, bias=False)
 
     def forward(self, x, freqs, cu_seqlens, max_seqlen):
+        x = self.pre_ln(x)
         q, k, v = self.to_qkv(x).split([self.dim, self.gqa_dim, self.gqa_dim], dim=-1)
 
         q = q.unflatten(-1, (self.q_heads, self.head_dim)) # [L, H_Q, D_H]
