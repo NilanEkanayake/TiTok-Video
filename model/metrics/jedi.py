@@ -46,7 +46,7 @@ def download(url, local_path, chunk_size=1024):
 
 
 class JEDiMetric(nn.Module):
-    def __init__(self, model_name='vit_large', finetuned=True, save_dir='jepa/ckpt'):
+    def __init__(self, model_name='vit_large', finetuned=True, save_dir='jepa/ckpt', device='cuda'):
         super().__init__()
         self.finetuned = finetuned
 
@@ -87,13 +87,13 @@ class JEDiMetric(nn.Module):
         )
 
         self.model = ClipAggregation(self.model, tubelet_size=config['pretrain']['tubelet_size'], attend_across_segments=config['optimization']['attend_across_segments'])
-        self.model = self.model.eval()
+        self.model = self.model.eval().to(device, torch.float32)
 
         if finetuned:
             self.classifier = AttentiveClassifier(embed_dim=self.model.embed_dim, num_heads=self.model.num_heads, depth=1, num_classes=config['data']['num_classes'])
             classifier_sd = {k.replace('module.', ''): v for k, v in torch.load(probe_path)['classifier'].items()}
             self.classifier.load_state_dict(classifier_sd)
-            self.classifier = self.classifier.eval()
+            self.classifier = self.classifier.eval().to(device, torch.float32)
 
         for p in self.parameters():
             p.requires_grad = False

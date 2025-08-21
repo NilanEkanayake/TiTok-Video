@@ -2,9 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-# from model.base.sigma_reparam import SNLinear
 from flash_attn import flash_attn_varlen_func
-
 from model.base.rope import apply_rotary_emb
 from einops import rearrange
 

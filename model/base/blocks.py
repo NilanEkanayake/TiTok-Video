@@ -22,8 +22,6 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from model.base.transformer import ResidualAttentionBlock
-# from model.base.sigma_reparam import SNLinear
-
 from model.base.rope import RoPE
 
 from einops.layers.torch import Rearrange

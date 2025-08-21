@@ -31,22 +31,23 @@ losses:
         perceptual_samples_per_step: 96
         perceptual_sampling_size: 192
 
-    disc:
+    disc: # https://arxiv.org/pdf/2501.09755
         use_disc: False
         freeze_encoder: False
 
-        disc_start: 16000
-        disc_weight: 0.4
-        disc_weight_warmup_steps: 1
+        disc_start: 175000
+        disc_warmup_steps: 10000
+        disc_weight: 0.05
+        disc_weight_warmup_steps: 50000
 
-        every_n: 7 # num encoder steps between discriminator steps
-        lecam_weight: 0.001
+        every_n: 1 # num encoder steps between discriminator steps
+        lecam_weight: 0.0 # 0.001
 
 dataset:
     train_dataset: "hf://datasets/NilanE/Vchitect_T2V_DataVerse_256p_8fps_wds/shards/*.tar" # "hf://datasets/Vchitect/Vchitect_T2V_DataVerse/**/*.tar"
     eval_dataset: "03.tar" # "hf://datasets/facebook/PE-Video/test/*.tar"
 
-    fps_range: [4, 8]
+    fps_range: [3, 4]
 
     workers: 8
     pin_memory: False
@@ -65,7 +66,7 @@ optimizer:
         beta1: 0.9
         beta2: 0.99
         weight_decay: 1e-4
-        warmup_steps: 0 # 20000
+        warmup_steps: 5000 # 20000
         end_lr: 2e-7
 
 training:

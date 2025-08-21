@@ -36,6 +36,18 @@ def compute_lecam_loss(
     lecam_loss += torch.mean(torch.pow(F.relu(ema_logits_real_mean - logits_fake_mean), 2))
     return lecam_loss
 
+# https://github.com/philippe-eecs/vitok/blob/main/pytorch_vitok_old/models/perceptual_networks/discriminator.py
+def hinge_d_loss(logits_real: torch.Tensor, logits_fake: torch.Tensor) -> torch.Tensor:
+    """Hinge loss for discrminator.
+
+    This function is borrowed from
+    https://github.com/CompVis/taming-transformers/blob/master/taming/modules/losses/vqperceptual.py#L20
+    """
+    loss_real = torch.mean(F.relu(1.0 - logits_real))
+    loss_fake = torch.mean(F.relu(1.0 + logits_fake))
+    d_loss = 0.5 * (loss_real + loss_fake)
+    return d_loss
+
     
 class ReconstructionLoss(nn.Module):
     def __init__(self, config):
@@ -48,9 +60,12 @@ class ReconstructionLoss(nn.Module):
             for param in self.perceptual_model.parameters():
                 param.requires_grad = False
 
-        self.use_disc = config.losses.disc.use_disc
-        self.disc_weight = config.losses.disc.disc_weight
-        self.disc_start = config.losses.disc.disc_start
+        loss_d = config.losses.disc
+        self.use_disc = loss_d.use_disc
+        self.disc_weight = loss_d.disc_weight
+        self.disc_start = loss_d.disc_start
+        self.disc_warm = loss_d.disc_warmup_steps
+        self.disc_weight_warm = loss_d.disc_weight_warmup_steps
 
         if self.use_disc:
             self.disc_model = TiTokEncoder( # same arch as tokenizer encoder
@@ -65,8 +80,8 @@ class ReconstructionLoss(nn.Module):
             if config.training.main.torch_compile:
                 self.disc_model = torch.compile(self.disc_model)
 
-            self.lecam_weight = config.losses.disc.lecam_weight
-            self.lecam_decay = config.losses.disc.get("lecam_decay", 0.999)
+            self.lecam_weight = loss_d.lecam_weight
+            self.lecam_decay = loss_d.get("lecam_decay", 0.999)
             if self.lecam_weight > 0.0:
                 self.register_buffer("ema_real_logits_mean", torch.zeros((1)))
                 self.register_buffer("ema_fake_logits_mean", torch.zeros((1)))
@@ -149,9 +164,9 @@ class ReconstructionLoss(nn.Module):
 
         # adversarial loss - not adapted yet, will need to use ViT for nested support?
         d_weight = self.disc_weight
-        d_weight_warm = min(1.0, ((global_step - self.disc_start) / self.config.losses.disc.disc_weight_warmup_steps))
+        d_weight_warm = min(1.0, ((global_step - (self.disc_start+self.disc_warm)) / self.disc_weight_warm))
         g_loss = 0.0
-        if self.use_disc and global_step > self.disc_start:
+        if self.use_disc and global_step > self.disc_start+self.disc_warm:
             target = [i.detach().contiguous() for i in target]
 
             ############################
@@ -159,15 +174,18 @@ class ReconstructionLoss(nn.Module):
                 param.requires_grad = False
             ############################
 
-            logits_real = self.disc_model(target, token_counts=[1]*B).view(B, -1).mean(1)
-            logits_fake = self.disc_model(recon, token_counts=[1]*B).view(B, -1).mean(1)
+            # logits_real = self.disc_model(target, token_counts=[1]*B).view(B, -1).mean(1)
+            # logits_fake = self.disc_model(recon, token_counts=[1]*B).view(B, -1).mean(1)
 
-            logits_relative = logits_fake - logits_real
-            g_loss = F.softplus(-logits_relative)
+            # logits_relative = logits_fake - logits_real
+            # g_loss = F.softplus(-logits_relative)
+
+            logits_fake = self.disc_model(recon, token_counts=[1]*B).view(B, -1).mean(1)
+            g_loss = -logits_fake.mean()
 
             ######################
             loss_dict['gan_loss'] = g_loss
-            loss_dict['logits_relative'] = logits_relative
+            # loss_dict['logits_relative'] = logits_relative
 
         total_loss = (
             recon_loss
@@ -198,7 +216,11 @@ class ReconstructionLoss(nn.Module):
 
         # disc model outputs normal dense tensor
  
-        logits_relative = logits_real - logits_fake
+        # logits_relative = logits_real - logits_fake
+        # d_loss = F.softplus(-logits_relative).mean()
+
+        # basic hinge
+        d_loss = hinge_d_loss(logits_real, logits_fake).mean()
 
         lecam_loss = 0.0
         if self.lecam_weight > 0.0:
@@ -212,12 +234,12 @@ class ReconstructionLoss(nn.Module):
             self.ema_fake_logits_mean = self.ema_fake_logits_mean * self.lecam_decay + logits_fake.clone().mean().detach() * (1 - self.lecam_decay)
             loss_dict['lecam_loss'] = lecam_loss
 
-        disc_loss = F.softplus(-logits_relative).mean() + self.lecam_weight * lecam_loss
+        total_loss = d_loss + self.lecam_weight * lecam_loss
         
         loss_dict.update({
-            "disc_loss": disc_loss,
+            "disc_loss": total_loss,
             "logits_real": logits_real,
             "logits_fake": logits_fake,
         })
             
-        return disc_loss, {'train/'+k:v.clone().mean().detach() for k,v in loss_dict.items()}
+        return total_loss, {'train/'+k:v.clone().mean().detach() for k,v in loss_dict.items()}
