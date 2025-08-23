@@ -42,6 +42,7 @@ losses:
 
         every_n: 1 # num encoder steps between discriminator steps
         lecam_weight: 0.0 # 0.001
+        adaptive_weight: False
 
 dataset:
     train_dataset: "hf://datasets/NilanE/Vchitect_T2V_DataVerse_256p_8fps_wds/shards/*.tar" # "hf://datasets/Vchitect/Vchitect_T2V_DataVerse/**/*.tar"
@@ -75,6 +76,8 @@ training:
         min_grid: [8, 128, 128]
         max_grid: [24, 256, 256]
 
+        biased_token_counts: True # matches small videos to small token counts, and vice versa.
+
         # seq_len is similar to batch size, but raw token count.
         # Set as much as the GPU can handle. The dataloader will try to target this value, but never exceed.
         train_seq_len: 131072
@@ -90,6 +93,9 @@ training:
 
         seed: 42
         max_grad_norm: 1.0
+
+        use_ema: False # enable alongside disc model
+        ema_decay: 0.9999 # from vitok
 
     eval:
         eval_step_interval: 500

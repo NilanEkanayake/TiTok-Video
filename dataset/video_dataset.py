@@ -135,6 +135,7 @@ def dynamic_batching(data, config, eval=False):
     token_range = config.training.sampling.num_token_range
     max_grid = config.training.sampling.max_grid # THW
     max_samples = config.training.eval.num_eval
+    biased_token_counts = config.training.sampling.biased_token_counts
 
     if eval:
         max_seq_len = config.training.sampling.eval_seq_len
@@ -159,14 +160,15 @@ def dynamic_batching(data, config, eval=False):
                 seen_samples += 1
 
         if (curr_seq_len + grid_size + token_count) > max_seq_len:
-            # match the smaller videos with the shorter token counts.
-            chunks = sorted(chunks, key=lambda d: d['grid_size'])
-            token_counts = sorted(token_counts)
+            # match smaller videos with shorter token counts
+            if biased_token_counts:
+                chunks = sorted(chunks, key=lambda d: d['grid_size'])
+                token_counts = sorted(token_counts)
 
-            # reshuffle
-            tmp = list(zip(chunks, token_counts))
-            random.shuffle(tmp)
-            chunks, token_counts = zip(*tmp)
+                # reshuffle
+                tmp = list(zip(chunks, token_counts))
+                random.shuffle(tmp)
+                chunks, token_counts = zip(*tmp)
 
             chunks = custom_collate(chunks)
             chunks['token_count'] = token_counts

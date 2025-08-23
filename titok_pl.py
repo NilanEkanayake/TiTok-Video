@@ -6,8 +6,10 @@ from lightning.pytorch.utilities import grad_norm
 from torch import optim, nn
 import torch.nn.functional as F
 
-from einops import rearrange
+from collections import OrderedDict
 from omegaconf import OmegaConf
+from copy import deepcopy
+from einops import rearrange
 import numpy as np
 import math
 
@@ -20,6 +22,19 @@ from train_utils.codebook_logging import CodebookLogger
 from model.metrics.eval_metrics import EvalMetrics
 import random
 
+# https://github.com/philippe-eecs/vitok/blob/main/pytorch_vitok_old/run_ae.py
+@torch.no_grad()
+def update_ema(ema_model, model, decay=0.999):
+    """
+    Step the EMA model towards the current model.
+    """
+    ema_params = OrderedDict(ema_model.named_parameters())
+    model_params = OrderedDict(model.named_parameters())
+
+    for name, param in model_params.items():
+        # TODO: Consider applying only to params that require_grad to avoid small numerical changes of pos_embed
+        ema_params[name].mul_(decay).add_(param.data, alpha=1 - decay)
+
     
 class TitokTrainer(L.LightningModule):
     def __init__(self, config):
@@ -27,6 +42,8 @@ class TitokTrainer(L.LightningModule):
         self.config = config
         self.use_disc = config.losses.disc.use_disc
         self.clip_grads = config.training.main.get('max_grad_norm', False)
+        self.use_ema = config.training.main.use_ema
+        self.ema_decay = config.training.main.ema_decay
 
         self.model = TiTok(config)
         self.eval_metrics = EvalMetrics(config)
@@ -41,6 +58,11 @@ class TitokTrainer(L.LightningModule):
 
         if config.losses.disc.use_disc and config.losses.disc.freeze_encoder:
             for param in self.model.encoder.parameters():
+                param.requires_grad = False
+
+        if self.use_ema:
+            self.ema_model = deepcopy(self.model)
+            for param in self.ema_model.parameters():
                 param.requires_grad = False
         
         self.automatic_optimization = False
@@ -64,6 +86,7 @@ class TitokTrainer(L.LightningModule):
 
         ############################
         self.toggle_optimizer(opt_g)
+        opt_g.zero_grad(set_to_none=True)
 
         x, results_dict = self.model(orig, token_counts)
 
@@ -71,7 +94,7 @@ class TitokTrainer(L.LightningModule):
             target=orig,
             recon=x,
             global_step=self.global_step,
-            results_dict=results_dict,
+            last_layer=self.model.decoder.proj_out.weight
         )
 
         self.manual_backward(loss)
@@ -81,13 +104,17 @@ class TitokTrainer(L.LightningModule):
             self.log_dict(grad_norm(self.model, norm_type=2))
         opt_g.step()
         sched_g.step()
-        opt_g.zero_grad(set_to_none=True)
+
+        if self.use_ema:
+            update_ema(self.ema_model, self.model, decay=self.ema_decay)
+
         self.untoggle_optimizer(opt_g)
         ############################
 
         if self.use_disc and self.global_step >= self.config.losses.disc.disc_start and self.global_step % self.config.losses.disc.every_n == 0:
             # with torch.nn.attention.sdpa_kernel(torch.nn.attention.SDPBackend.MATH):
                 self.toggle_optimizer(opt_d)
+                opt_d.zero_grad(set_to_none=True)
 
                 d_loss, d_loss_dict = self.loss_module(
                     target=orig,
@@ -104,7 +131,6 @@ class TitokTrainer(L.LightningModule):
                     self.log_dict(grad_norm(self.loss_module, norm_type=2))
                 opt_d.step()
                 sched_d.step()
-                opt_d.zero_grad(set_to_none=True)
                 self.untoggle_optimizer(opt_d)
 
         self.log_dict(loss_dict, prog_bar=True)
@@ -129,7 +155,11 @@ class TitokTrainer(L.LightningModule):
             fps = batch['fps']
             token_counts = batch['token_count']
 
-            recon, _ = self.model(orig, token_counts)
+            if self.use_ema:
+                recon, _ = self.ema_model(orig, token_counts)
+            else:
+                recon, _ = self.model(orig, token_counts)
+                
             self.eval_metrics.update(recon, orig)
 
         for x, y, f, t in zip(recon, orig, fps, token_counts): # list of CTHW, recon and orig sharing tensor shape
@@ -217,7 +247,16 @@ class TitokTrainer(L.LightningModule):
     def state_dict(self):
         # Don't save metrics
         return {k: v for k, v in super().state_dict().items() if 'eval_metrics' not in k and 'perceptual_model' not in k}
+    
+    def on_load_checkpoint(self, checkpoint): # copy model weights to ema_model if it doesn't already exist
+        if self.use_ema and all([not k.startswith('ema_model') for k in checkpoint['state_dict'].keys()]):
+            new_sd = {}
+            for k, v in checkpoint['state_dict'].items():
+                new_sd[k] = v
+                if k.startswith('model'):
+                    new_sd['ema_'+k] = v
 
+            checkpoint['state_dict'] = new_sd
 
 
 if __name__ == '__main__':

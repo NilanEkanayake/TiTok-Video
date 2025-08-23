@@ -48,6 +48,15 @@ def hinge_d_loss(logits_real: torch.Tensor, logits_fake: torch.Tensor) -> torch.
     d_loss = 0.5 * (loss_real + loss_fake)
     return d_loss
 
+# https://github.com/CompVis/taming-transformers/blob/master/taming/modules/losses/vqperceptual.py
+def calculate_adaptive_weight(nll_loss, g_loss, last_layer):
+    nll_grads = torch.autograd.grad(nll_loss, last_layer, retain_graph=True)[0]
+    g_grads = torch.autograd.grad(g_loss, last_layer, retain_graph=True)[0]
+
+    d_weight = torch.norm(nll_grads) / (torch.norm(g_grads) + 1e-4)
+    d_weight = torch.clamp(d_weight, 0.0, 1e4).detach()
+    return d_weight
+
     
 class ReconstructionLoss(nn.Module):
     def __init__(self, config):
@@ -66,13 +75,14 @@ class ReconstructionLoss(nn.Module):
         self.disc_start = loss_d.disc_start
         self.disc_warm = loss_d.disc_warmup_steps
         self.disc_weight_warm = loss_d.disc_weight_warmup_steps
+        self.disc_adaptive_weight = loss_d.adaptive_weight
 
         if self.use_disc:
             self.disc_model = TiTokEncoder( # same arch as tokenizer encoder
                 model_size=config.model.disc.model_size,
                 patch_size=config.model.disc.patch_size,
                 in_channels=3,
-                out_channels=1, # more stable to use more channels?
+                out_channels=16, # more stable to use more channels?
                 max_grid=config.training.sampling.max_grid,
                 max_tokens=config.training.sampling.num_token_range[1],
             ).apply(init_weights)
@@ -119,14 +129,14 @@ class ReconstructionLoss(nn.Module):
         return recon, target
 
 
-    def forward(self, target, recon, global_step, results_dict=None, disc_forward=False):
+    def forward(self, target, recon, global_step, disc_forward=False, last_layer=None):
         if disc_forward:
             return self._forward_discriminator(target, recon, global_step)
         else:
-            return self._forward_generator(target, recon, global_step, results_dict)
+            return self._forward_generator(target, recon, global_step, last_layer)
         
 
-    def _forward_generator(self, target, recon, global_step, results_dict=None):
+    def _forward_generator(self, target, recon, global_step, last_layer=None):
         # target and recon are now lists of CTHW tensors.
         loss_dict = {}
 
@@ -165,6 +175,7 @@ class ReconstructionLoss(nn.Module):
         # adversarial loss - not adapted yet, will need to use ViT for nested support?
         d_weight = self.disc_weight
         d_weight_warm = min(1.0, ((global_step - (self.disc_start+self.disc_warm)) / self.disc_weight_warm))
+        adapt_d_weight = 1.0
         g_loss = 0.0
         if self.use_disc and global_step > self.disc_start+self.disc_warm:
             target = [i.detach().contiguous() for i in target]
@@ -183,6 +194,11 @@ class ReconstructionLoss(nn.Module):
             logits_fake = self.disc_model(recon, token_counts=[1]*B).view(B, -1).mean(1)
             g_loss = -logits_fake.mean()
 
+            if self.disc_adaptive_weight:
+                nll_loss = recon_loss + (self.perceptual_weight * perceptual_loss)
+                adapt_d_weight = calculate_adaptive_weight(nll_loss.mean(), g_loss.mean(), last_layer)
+                loss_dict['disc_weight'] = adapt_d_weight * d_weight * d_weight_warm
+
             ######################
             loss_dict['gan_loss'] = g_loss
             # loss_dict['logits_relative'] = logits_relative
@@ -190,7 +206,7 @@ class ReconstructionLoss(nn.Module):
         total_loss = (
             recon_loss
             + (self.perceptual_weight * perceptual_loss)
-            + (d_weight * d_weight_warm * g_loss)
+            + (d_weight * d_weight_warm * adapt_d_weight * g_loss)
         ).mean()
 
         loss_dict['total_loss'] = total_loss
