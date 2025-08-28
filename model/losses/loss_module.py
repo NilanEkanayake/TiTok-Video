@@ -14,6 +14,7 @@ import random
 def l1(x, y):
     return torch.abs(x - y)
 
+
 # https://github.com/bytedance/1d-tokenizer/blob/main/modeling/modules/losses.py
 def compute_lecam_loss(
     logits_real_mean: torch.Tensor,
@@ -36,17 +37,6 @@ def compute_lecam_loss(
     lecam_loss += torch.mean(torch.pow(F.relu(ema_logits_real_mean - logits_fake_mean), 2))
     return lecam_loss
 
-# https://github.com/philippe-eecs/vitok/blob/main/pytorch_vitok_old/models/perceptual_networks/discriminator.py
-def hinge_d_loss(logits_real: torch.Tensor, logits_fake: torch.Tensor) -> torch.Tensor:
-    """Hinge loss for discrminator.
-
-    This function is borrowed from
-    https://github.com/CompVis/taming-transformers/blob/master/taming/modules/losses/vqperceptual.py#L20
-    """
-    loss_real = torch.mean(F.relu(1.0 - logits_real))
-    loss_fake = torch.mean(F.relu(1.0 + logits_fake))
-    d_loss = 0.5 * (loss_real + loss_fake)
-    return d_loss
 
 # https://github.com/CompVis/taming-transformers/blob/master/taming/modules/losses/vqperceptual.py
 def calculate_adaptive_weight(nll_loss, g_loss, last_layer):
@@ -76,15 +66,16 @@ class ReconstructionLoss(nn.Module):
         self.disc_warm = loss_d.disc_warmup_steps
         self.disc_weight_warm = loss_d.disc_weight_warmup_steps
         self.disc_adaptive_weight = loss_d.adaptive_weight
+        self.token_range = config.training.sampling.num_token_range
 
         if self.use_disc:
             self.disc_model = TiTokEncoder( # same arch as tokenizer encoder
                 model_size=config.model.disc.model_size,
                 patch_size=config.model.disc.patch_size,
-                in_channels=3,
+                in_channels=3*2,
                 out_channels=16, # more stable to use more channels?
                 max_grid=config.training.sampling.max_grid,
-                max_tokens=config.training.sampling.num_token_range[1],
+                max_tokens=self.token_range[1],
             ).apply(init_weights)
 
             if config.training.main.torch_compile:
@@ -129,9 +120,9 @@ class ReconstructionLoss(nn.Module):
         return recon, target
 
 
-    def forward(self, target, recon, global_step, disc_forward=False, last_layer=None):
+    def forward(self, target, recon, global_step, disc_forward=False, last_layer=None, token_counts=None):
         if disc_forward:
-            return self._forward_discriminator(target, recon, global_step)
+            return self._forward_discriminator(target, recon, token_counts)
         else:
             return self._forward_generator(target, recon, global_step, last_layer)
         
@@ -172,7 +163,7 @@ class ReconstructionLoss(nn.Module):
 
             loss_dict['perceptual_loss'] = perceptual_loss
 
-        # adversarial loss - not adapted yet, will need to use ViT for nested support?
+
         d_weight = self.disc_weight
         d_weight_warm = min(1.0, ((global_step - (self.disc_start+self.disc_warm)) / self.disc_weight_warm))
         adapt_d_weight = 1.0
@@ -185,14 +176,13 @@ class ReconstructionLoss(nn.Module):
                 param.requires_grad = False
             ############################
 
-            # logits_real = self.disc_model(target, token_counts=[1]*B).view(B, -1).mean(1)
-            # logits_fake = self.disc_model(recon, token_counts=[1]*B).view(B, -1).mean(1)
-
-            # logits_relative = logits_fake - logits_real
-            # g_loss = F.softplus(-logits_relative)
-
-            logits_fake = self.disc_model(recon, token_counts=[1]*B).view(B, -1).mean(1)
-            g_loss = -logits_fake.mean()
+            logits_fake_a, logits_real_a = self.disc_model([torch.cat([x, y], dim=0) for x, y in zip(recon, target)], token_counts=[2]*B).view(B, 2, -1).mean(-1).chunk(2, dim=1)
+            logits_real_b, logits_fake_b = self.disc_model([torch.cat([x, y], dim=0) for x, y in zip(target, recon)], token_counts=[2]*B).view(B, 2, -1).mean(-1).chunk(2, dim=1)
+            logits_fake = (logits_fake_a + logits_fake_b) / 2
+            logits_real = (logits_real_a + logits_real_b) / 2
+            
+            logits_relative = logits_fake - logits_real
+            g_loss = F.softplus(-logits_relative)
 
             if self.disc_adaptive_weight:
                 nll_loss = recon_loss + (self.perceptual_weight * perceptual_loss)
@@ -214,7 +204,7 @@ class ReconstructionLoss(nn.Module):
         return total_loss, {'train/'+k:v.clone().mean().detach() for k,v in loss_dict.items()}
     
     
-    def _forward_discriminator(self, target, recon, global_step):
+    def _forward_discriminator(self, target, recon, token_counts=None):
         loss_dict = {}
         
         target = [i.detach().requires_grad_(True).contiguous() for i in target]
@@ -227,16 +217,16 @@ class ReconstructionLoss(nn.Module):
             param.requires_grad = True
         ############################
 
-        logits_real = self.disc_model(target, token_counts=[1]*B).view(B, -1).mean(1) # model out = [B*L, C] or [B*1, 1]
-        logits_fake = self.disc_model(recon, token_counts=[1]*B).view(B, -1).mean(1)
-
         # disc model outputs normal dense tensor
- 
-        # logits_relative = logits_real - logits_fake
-        # d_loss = F.softplus(-logits_relative).mean()
 
-        # basic hinge
-        d_loss = hinge_d_loss(logits_real, logits_fake).mean()
+        # https://arxiv.org/abs/2501.05441 (Rp GAN) + https://arxiv.org/abs/2501.00103 (Recon GAN)
+        logits_fake_a, logits_real_a = self.disc_model([torch.cat([x, y], dim=0) for x, y in zip(recon, target)], token_counts=[2]*B).view(B, 2, -1).mean(-1).chunk(2, dim=1)
+        logits_real_b, logits_fake_b = self.disc_model([torch.cat([x, y], dim=0) for x, y in zip(target, recon)], token_counts=[2]*B).view(B, 2, -1).mean(-1).chunk(2, dim=1)
+        logits_fake = (logits_fake_a + logits_fake_b) / 2
+        logits_real = (logits_real_a + logits_real_b) / 2
+        
+        logits_relative = logits_real - logits_fake
+        d_loss = F.softplus(-logits_relative).mean()
 
         lecam_loss = 0.0
         if self.lecam_weight > 0.0:

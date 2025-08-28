@@ -39,10 +39,12 @@ def custom_collate(batch): # list of chunks in? Don't collate past that?
 
 def video_process(data, config, eval=False):
     cs = config.training.sampling
+    cd = config.dataset
 
     max_grid = cs.max_grid # THW
     min_grid = cs.min_grid
-    fps_range = config.dataset.fps_range
+    fps_range = cd.fps_range
+    max_aspect_ratio = cd.max_aspect_ratio
 
     patch_size = config.model.titok.patch_size # eg. [4, 8, 8]
     
@@ -93,8 +95,6 @@ def video_process(data, config, eval=False):
                                 chunk_indices = np.linspace(start_idx, end_idx - 1, chunk_num_frames, dtype=int).tolist()
                                 chunk = torch.Tensor(vr.get_batch(chunk_indices))
                                 
-
-                                max_aspect_ratio = 16//8 # aka 2
                                 chunk_height = random.randrange(min_grid[1], min(max_grid[1], in_grid[1])+1, step=patch_size[1])
                                 # make sure the ratio check is multiple of patch_size - might be slightly over the max aspect ratio, doesn't matter
                                 width_error = (chunk_height//max_aspect_ratio) % patch_size[2]

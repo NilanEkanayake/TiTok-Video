@@ -120,7 +120,8 @@ class TitokTrainer(L.LightningModule):
                     target=orig,
                     recon=x,
                     global_step=self.global_step,
-                    disc_forward=True
+                    disc_forward=True,
+                    token_counts=token_counts,
                 )
                 loss_dict.update(d_loss_dict)
 
