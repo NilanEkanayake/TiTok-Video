@@ -46,7 +46,7 @@ def download(url, local_path, chunk_size=1024):
 
 
 class JEDiMetric(nn.Module):
-    def __init__(self, model_name='vit_large', finetuned=True, save_dir='jepa/ckpt', device='cuda'):
+    def __init__(self, model_name='vit_large', finetuned=True, save_dir='jepa/ckpt', device='cuda:0'):
         super().__init__()
         self.finetuned = finetuned
 
