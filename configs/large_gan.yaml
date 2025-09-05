@@ -1,7 +1,7 @@
 general:
     wandb:
         project: pixel_titok_video_11
-        run_name: LPIPS144x256-SL172k-BaseLarge-1024Eval
+        run_name: LPIPS144x224-SL147k-BaseLarge-1024Eval-smallGAN0.05-N1-60kDWwarm-40kDoptimWarm-EMA
         log_step_interval: 50
 
     checkpoints:
@@ -29,19 +29,19 @@ model:
 losses:
     recon:
         perceptual_weight: 1.0 # 1.0
-        perceptual_samples_per_step: 256 # Use -1 to sample all.
+        perceptual_samples_per_step: 224 # Use -1 to sample all.
         perceptual_sampling_size: 144 # fixed-size input to LPIPS. Always square.
 
     disc:
-        use_disc: False
+        use_disc: True
         freeze_encoder: False
 
-        disc_start: 175000
-        disc_warmup_steps: 0 # no GAN loss applied to the tokenizer during this period, but disc is still trained.
-        disc_weight: 0.02
-        disc_weight_warmup_steps: 150000
+        disc_start: 118000
+        disc_warmup_steps: 0 # 2000 | no GAN loss applied to the tokenizer during this period, but disc is still trained.
+        disc_weight: 0.05
+        disc_weight_warmup_steps: 60000
 
-        every_n: 5 # num encoder steps between discriminator steps
+        every_n: 1 # num encoder steps between discriminator steps
         lecam_weight: 0.0 # 0.001
         adaptive_weight: False
 
@@ -50,7 +50,7 @@ dataset:
     # eval_dataset: "hf://datasets/facebook/PE-Video/test/*.tar"
 
     train_dataset: "/shared-docker/shards/{00000..00079}.tar"
-    eval_dataset: "/shared-docker/test/{000000..000029}.tar"
+    eval_dataset: "/shared-docker/test/{000000..000029}.tar" # "hf://datasets/facebook/PE-Video/test/{000000..000029}.tar" # 
 
     fps_range: [3, 4]
     max_aspect_ratio: 2
@@ -72,7 +72,7 @@ optimizer:
         beta1: 0.9
         beta2: 0.99
         weight_decay: 1e-4
-        warmup_steps: 10000
+        warmup_steps: 60000
         end_lr: 4e-7
 
 training:
@@ -83,7 +83,7 @@ training:
 
         # seq_len is similar to batch size, but raw token count.
         # Set as much as the GPU can handle. The dataloader will try to target this value, but never exceed.
-        train_seq_len: 172032 # per-gpu or all?
+        train_seq_len: 147456 # per-gpu or all?
         eval_seq_len: 32768
 
     main:
@@ -97,7 +97,7 @@ training:
         seed: 42
         max_grad_norm: 1.0
 
-        use_ema: False # enable alongside disc model
+        use_ema: True # enable alongside disc model
         ema_decay: 0.999 # vitok uses 0.9999
 
     eval:

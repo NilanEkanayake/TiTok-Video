@@ -9,26 +9,9 @@ import webdataset as wds
 from torch.utils.data import default_collate
 from einops import rearrange
 from torch.utils.data import DataLoader
-from huggingface_hub import HfFileSystem, hf_hub_url #, get_token
 import glob
 import random
 import math
-
-def convert_shards(shard_paths):
-    out_paths = []
-    if type(shard_paths) == str:
-        shard_paths = [shard_paths]
-    for shard_path in shard_paths:
-        if shard_path.startswith('hf://'):
-            fs = HfFileSystem()
-            files = [fs.resolve_path(path) for path in fs.glob(shard_path)]
-            urls = [hf_hub_url(file.repo_id, file.path_in_repo, repo_type="dataset") for file in files]
-            # shard_path = f"pipe: curl -s -L -H 'Authorization:Bearer {get_token()}' {'::'.join(shard_path)}" # for gated datasets. Add retry/timeout?
-            out_paths += urls
-        else:
-            out_paths.append(shard_path)
-
-    return out_paths
 
 def custom_collate(batch): # list of chunks in? Don't collate past that?
     # batch is a list of dicts, want list under a single dict header?
@@ -185,7 +168,7 @@ class WebdatasetVideoDataModule(pl.LightningModule):
         self.pin_memory = cd.pin_memory
 
         train_pipeline = [
-            wds.ResampledShards(convert_shards(train_shard_path)), # no handler?
+            wds.ResampledShards(train_shard_path), # no handler?
             wds.split_by_worker, # no overlapping entries between workers
             wds.tarfile_to_samples(handler=wds.warn_and_continue),
             wds.shuffle(8, handler=wds.warn_and_continue),
@@ -195,7 +178,7 @@ class WebdatasetVideoDataModule(pl.LightningModule):
         ]
 
         eval_pipeline = [
-            wds.SimpleShardList(convert_shards(eval_shard_path)),
+            wds.SimpleShardList(eval_shard_path),
             wds.split_by_worker,
             wds.tarfile_to_samples(handler=wds.warn_and_continue),
             lambda data: video_process(data, config, eval=True),

@@ -270,8 +270,8 @@ if __name__ == '__main__':
         torch.backends.cuda.matmul.allow_tf32 = True
         torch.backends.cudnn.allow_tf32 = True
 
-        torch.backends.cuda.matmul.allow_bf16_reduced_precision_reduction = True
-        torch.backends.cuda.matmul.allow_fp16_reduced_precision_reduction = True
+        # torch.backends.cuda.matmul.allow_bf16_reduced_precision_reduction = True
+        # torch.backends.cuda.matmul.allow_fp16_reduced_precision_reduction = True
     torch.backends.cudnn.benchmark = True
     torch.backends.cudnn.deterministic = False
 

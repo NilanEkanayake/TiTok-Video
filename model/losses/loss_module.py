@@ -6,6 +6,7 @@ import numpy as np
 
 from model.base.blocks import TiTokEncoder, init_weights
 from model.metrics.lpips import LPIPS
+from model.metrics.milo import MILO
 from torchvision.transforms import v2
 from torchvision.transforms.functional import InterpolationMode
 import random
@@ -56,6 +57,7 @@ class ReconstructionLoss(nn.Module):
         self.perceptual_weight = config.losses.recon.perceptual_weight
         if self.perceptual_weight > 0.0:
             self.perceptual_model = LPIPS().eval()
+            # self.perceptual_model = MILO().eval()
             for param in self.perceptual_model.parameters():
                 param.requires_grad = False
 
