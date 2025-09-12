@@ -1,7 +1,7 @@
 general:
     wandb:
         project: pixel_titok_video_11
-        run_name: LPIPS144x224-SL147k-BaseLarge-1024Eval-smallGAN0.05-N1-60kDWwarm-40kDoptimWarm-EMA
+        run_name: LPIPS144x224-SL172k-BaseLarge-1024Eval-smallGAN0.2-sameLR-N1-NWW5k-DWW60k-DOW60k-EMA-freezeEnc-bigLR
         log_step_interval: 50
 
     checkpoints:
@@ -9,7 +9,7 @@ general:
         save_interval: 2000
         keep_prior: 2 # -1 to keep all
 
-        resume_from_checkpoint: 118k-multires-large.ckpt
+        resume_from_checkpoint: out_ckpt/epoch=0-step=198000.ckpt # 118k-multires-large.ckpt
         init_from_checkpoint:
 
 model:
@@ -34,11 +34,11 @@ losses:
 
     disc:
         use_disc: True
-        freeze_encoder: False
+        freeze_encoder: True
 
         disc_start: 118000
-        disc_warmup_steps: 0 # 2000 | no GAN loss applied to the tokenizer during this period, but disc is still trained.
-        disc_weight: 0.05
+        disc_warmup_steps: 5000 # no GAN loss applied to the tokenizer during this period, but disc is still trained.
+        disc_weight: 0.2
         disc_weight_warmup_steps: 60000
 
         every_n: 1 # num encoder steps between discriminator steps
@@ -49,8 +49,8 @@ dataset:
     # train_dataset: "hf://datasets/NilanE/Vchitect_T2V_DataVerse_256p_8fps_wds/shards/*.tar" # "hf://datasets/facebook/PE-Video/train/*.tar"
     # eval_dataset: "hf://datasets/facebook/PE-Video/test/*.tar"
 
-    train_dataset: "/shared-docker/shards/{00000..00079}.tar"
-    eval_dataset: "/shared-docker/test/{000000..000029}.tar" # "hf://datasets/facebook/PE-Video/test/{000000..000029}.tar" # 
+    train_dataset: "ds/shards/{00000..00079}.tar"
+    eval_dataset: "ds/test/{000000..000029}.tar" # "hf://datasets/facebook/PE-Video/test/{000000..000029}.tar" # 
 
     fps_range: [3, 4]
     max_aspect_ratio: 2
@@ -68,12 +68,12 @@ optimizer:
         end_lr: 1e-5
 
     disc:
-        learning_rate: 2e-6 # See https://arxiv.org/pdf/2501.09755
+        learning_rate: 5e-5 # 5e-6 # See https://arxiv.org/pdf/2501.09755
         beta1: 0.9
         beta2: 0.99
         weight_decay: 1e-4
         warmup_steps: 60000
-        end_lr: 4e-7
+        end_lr: 1e-5 # 1e-6
 
 training:
     sampling:
@@ -83,7 +83,7 @@ training:
 
         # seq_len is similar to batch size, but raw token count.
         # Set as much as the GPU can handle. The dataloader will try to target this value, but never exceed.
-        train_seq_len: 147456 # per-gpu or all?
+        train_seq_len: 172032 # 147456 # per-gpu or all?
         eval_seq_len: 32768
 
     main:

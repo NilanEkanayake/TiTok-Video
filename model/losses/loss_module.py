@@ -15,39 +15,6 @@ import random
 def l1(x, y):
     return torch.abs(x - y)
 
-
-# https://github.com/bytedance/1d-tokenizer/blob/main/modeling/modules/losses.py
-def compute_lecam_loss(
-    logits_real_mean: torch.Tensor,
-    logits_fake_mean: torch.Tensor,
-    ema_logits_real_mean: torch.Tensor,
-    ema_logits_fake_mean: torch.Tensor
-) -> torch.Tensor:
-    """Computes the LeCam loss for the given average real and fake logits.
-
-    Args:
-        logits_real_mean -> torch.Tensor: The average real logits.
-        logits_fake_mean -> torch.Tensor: The average fake logits.
-        ema_logits_real_mean -> torch.Tensor: The EMA of the average real logits.
-        ema_logits_fake_mean -> torch.Tensor: The EMA of the average fake logits.
-
-    Returns:
-        lecam_loss -> torch.Tensor: The LeCam loss.
-    """
-    lecam_loss = torch.mean(torch.pow(F.relu(logits_real_mean - ema_logits_fake_mean), 2))
-    lecam_loss += torch.mean(torch.pow(F.relu(ema_logits_real_mean - logits_fake_mean), 2))
-    return lecam_loss
-
-
-# https://github.com/CompVis/taming-transformers/blob/master/taming/modules/losses/vqperceptual.py
-def calculate_adaptive_weight(nll_loss, g_loss, last_layer):
-    nll_grads = torch.autograd.grad(nll_loss, last_layer, retain_graph=True)[0]
-    g_grads = torch.autograd.grad(g_loss, last_layer, retain_graph=True)[0]
-
-    d_weight = torch.norm(nll_grads) / (torch.norm(g_grads) + 1e-4)
-    d_weight = torch.clamp(d_weight, 0.0, 1e4).detach()
-    return d_weight
-
     
 class ReconstructionLoss(nn.Module):
     def __init__(self, config):
@@ -67,7 +34,6 @@ class ReconstructionLoss(nn.Module):
         self.disc_start = loss_d.disc_start
         self.disc_warm = loss_d.disc_warmup_steps
         self.disc_weight_warm = loss_d.disc_weight_warmup_steps
-        self.disc_adaptive_weight = loss_d.adaptive_weight
         self.token_range = config.training.sampling.num_token_range
 
         if self.use_disc:
@@ -82,12 +48,6 @@ class ReconstructionLoss(nn.Module):
 
             if config.training.main.torch_compile:
                 self.disc_model = torch.compile(self.disc_model)
-
-            self.lecam_weight = loss_d.lecam_weight
-            self.lecam_decay = loss_d.get("lecam_decay", 0.999)
-            if self.lecam_weight > 0.0:
-                self.register_buffer("ema_real_logits_mean", torch.zeros((1)))
-                self.register_buffer("ema_fake_logits_mean", torch.zeros((1)))
 
         self.total_steps = config.training.main.max_steps
 
@@ -168,7 +128,6 @@ class ReconstructionLoss(nn.Module):
 
         d_weight = self.disc_weight
         d_weight_warm = min(1.0, ((global_step - (self.disc_start+self.disc_warm)) / self.disc_weight_warm))
-        adapt_d_weight = 1.0
         g_loss = 0.0
         if self.use_disc and global_step > self.disc_start+self.disc_warm:
             target = [i.detach().contiguous() for i in target]
@@ -186,11 +145,6 @@ class ReconstructionLoss(nn.Module):
             logits_relative = logits_fake - logits_real
             g_loss = F.softplus(-logits_relative)
 
-            if self.disc_adaptive_weight:
-                nll_loss = recon_loss + (self.perceptual_weight * perceptual_loss)
-                adapt_d_weight = calculate_adaptive_weight(nll_loss.mean(), g_loss.mean(), last_layer)
-                loss_dict['disc_weight'] = adapt_d_weight * d_weight * d_weight_warm
-
             ######################
             loss_dict['gan_loss'] = g_loss
             # loss_dict['logits_relative'] = logits_relative
@@ -198,7 +152,7 @@ class ReconstructionLoss(nn.Module):
         total_loss = (
             recon_loss
             + (self.perceptual_weight * perceptual_loss)
-            + (d_weight * d_weight_warm * adapt_d_weight * g_loss)
+            + (d_weight * d_weight_warm * g_loss)
         ).mean()
 
         loss_dict['total_loss'] = total_loss
@@ -228,21 +182,7 @@ class ReconstructionLoss(nn.Module):
         logits_real = (logits_real_a + logits_real_b) / 2
         
         logits_relative = logits_real - logits_fake
-        d_loss = F.softplus(-logits_relative).mean()
-
-        lecam_loss = 0.0
-        if self.lecam_weight > 0.0:
-            lecam_loss = compute_lecam_loss(
-                logits_real.mean(),
-                logits_fake.mean(),
-                self.ema_real_logits_mean,
-                self.ema_fake_logits_mean
-            )
-            self.ema_real_logits_mean = self.ema_real_logits_mean * self.lecam_decay + logits_real.clone().mean().detach() * (1 - self.lecam_decay)
-            self.ema_fake_logits_mean = self.ema_fake_logits_mean * self.lecam_decay + logits_fake.clone().mean().detach() * (1 - self.lecam_decay)
-            loss_dict['lecam_loss'] = lecam_loss
-
-        total_loss = d_loss + self.lecam_weight * lecam_loss
+        total_loss = F.softplus(-logits_relative).mean()
         
         loss_dict.update({
             "disc_loss": total_loss,

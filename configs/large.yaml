@@ -7,15 +7,14 @@ general:
     checkpoints:
         save_path: out_ckpt
         save_interval: 2000
-        keep_prior: 2 # -1 to keep all
+        keep_prior: 6 # -1 to keep all
 
-        resume_from_checkpoint: 118k-multires-large.ckpt
+        resume_from_checkpoint:
         init_from_checkpoint:
 
 model:
     titok:
         patch_size: [4, 8, 8]
-
         encoder_size: base_thin
         decoder_size: large_thin
 
@@ -23,7 +22,6 @@ model:
 
     disc:
         patch_size: [4, 8, 8]
-
         model_size: small_thin
 
 losses:
@@ -35,22 +33,20 @@ losses:
     disc:
         use_disc: False
         freeze_encoder: False
+        every_n: 1 # num tokenizer steps for every discriminator step
 
-        disc_start: 175000
-        disc_warmup_steps: 0 # no GAN loss applied to the tokenizer during this period, but disc is still trained.
-        disc_weight: 0.02
-        disc_weight_warmup_steps: 150000
 
-        every_n: 5 # num encoder steps between discriminator steps
-        lecam_weight: 0.0 # 0.001
-        adaptive_weight: False
+        disc_start: 200000
+        disc_warmup_steps: 5000 # no GAN loss applied to the tokenizer during this period, but disc is still trained.
+        disc_weight: 0.3
+        disc_weight_warmup_steps: 80000
 
 dataset:
-    # train_dataset: "hf://datasets/NilanE/Vchitect_T2V_DataVerse_256p_8fps_wds/shards/*.tar" # "hf://datasets/facebook/PE-Video/train/*.tar"
-    # eval_dataset: "hf://datasets/facebook/PE-Video/test/*.tar"
+    # train_dataset: "hf://datasets/NilanE/Vchitect_T2V_DataVerse_256p_8fps_wds/shards/{00000..00079}.tar"
+    # eval_dataset: "hf://datasets/facebook/PE-Video/test/{000000..000029}.tar"
 
-    train_dataset: "/shared-docker/shards/{00000..00079}.tar"
-    eval_dataset: "/shared-docker/test/{000000..000029}.tar"
+    train_dataset: "ds/shards/{00000..00079}.tar"
+    eval_dataset: "ds/test/{000000..000029}.tar"
 
     fps_range: [3, 4]
     max_aspect_ratio: 2
@@ -60,7 +56,7 @@ dataset:
 
 optimizer:
     titok:
-        learning_rate: 5e-5
+        learning_rate: 1e-4
         beta1: 0.9
         beta2: 0.99
         weight_decay: 1e-4
@@ -68,22 +64,22 @@ optimizer:
         end_lr: 1e-5
 
     disc:
-        learning_rate: 2e-6 # See https://arxiv.org/pdf/2501.09755
+        learning_rate: 5e-5
         beta1: 0.9
         beta2: 0.99
         weight_decay: 1e-4
-        warmup_steps: 10000
-        end_lr: 4e-7
+        warmup_steps: 80000 # same as weight warm
+        end_lr: 5e-6
 
 training:
     sampling:
         num_token_range: [128, 1024]
-        min_grid: [8, 128, 128]
+        min_grid: [8, 144, 144]
         max_grid: [20, 192, 192]
 
         # seq_len is similar to batch size, but raw token count.
         # Set as much as the GPU can handle. The dataloader will try to target this value, but never exceed.
-        train_seq_len: 172032 # per-gpu or all?
+        train_seq_len: 172032 # per-gpu
         eval_seq_len: 32768
 
     main:
@@ -101,7 +97,7 @@ training:
         ema_decay: 0.999 # vitok uses 0.9999
 
     eval:
-        eval_step_interval: 2000
+        eval_step_interval: 4000
         num_eval: 1024
 
         log_codebook: True

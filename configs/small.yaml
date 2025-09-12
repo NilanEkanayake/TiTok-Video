@@ -45,8 +45,8 @@ losses:
         adaptive_weight: False
 
 dataset:
-    train_dataset: "hf://datasets/NilanE/Vchitect_T2V_DataVerse_256p_8fps_wds/shards/*.tar" # "hf://datasets/Vchitect/Vchitect_T2V_DataVerse/**/*.tar"
-    eval_dataset: "03.tar" # "hf://datasets/facebook/PE-Video/test/*.tar"
+    train_dataset: "hf://datasets/NilanE/Vchitect_T2V_DataVerse_256p_8fps_wds/shards/{00000..00079}.tar"
+    eval_dataset: "hf://datasets/facebook/PE-Video/test/{000000..000029}.tar"
 
     fps_range: [3, 4]
 
