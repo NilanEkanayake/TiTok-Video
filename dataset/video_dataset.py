@@ -13,6 +13,8 @@ import glob
 import random
 import math
 
+from webdataset.filters import pipelinefilter
+
 def custom_collate(batch): # list of chunks in? Don't collate past that?
     # batch is a list of dicts, want list under a single dict header?
     chunks = [item['video'] for item in batch]
@@ -20,7 +22,7 @@ def custom_collate(batch): # list of chunks in? Don't collate past that?
     fps = [item['fps'] for item in batch]
     return {'video': chunks, 'fps': fps, '__key__': keys}
 
-def video_process(data, config, eval=False):
+def _video_process(data, config=None, eval=False):
     cs = config.training.sampling
     cd = config.dataset
 
@@ -29,7 +31,7 @@ def video_process(data, config, eval=False):
     fps_range = cd.fps_range
     max_aspect_ratio = cd.max_aspect_ratio
 
-    patch_size = config.model.titok.patch_size # eg. [4, 8, 8]
+    patch_size = config.tokenizer.model.patch_size # eg. [4, 8, 8]
     
     dtypes = {
         '16': torch.float16,
@@ -113,8 +115,8 @@ def video_process(data, config, eval=False):
                     print(f'Decode fail: {error}')
 
 
-def dynamic_batching(data, config, eval=False):
-    patch_size = config.model.titok.patch_size
+def _dynamic_batching(data, config, eval=False):
+    patch_size = config.tokenizer.model.patch_size 
     token_range = config.training.sampling.num_token_range
     max_grid = config.training.sampling.max_grid # THW
     max_samples = config.training.eval.num_eval
@@ -156,6 +158,8 @@ def dynamic_batching(data, config, eval=False):
         chunks.append(sample)
         token_counts.append(token_count)
 
+video_process = pipelinefilter(_video_process)
+dynamic_batching = pipelinefilter(_dynamic_batching)
 
 class WebdatasetVideoDataModule(pl.LightningModule):
     def __init__(self, config):
@@ -172,17 +176,17 @@ class WebdatasetVideoDataModule(pl.LightningModule):
             wds.split_by_worker, # no overlapping entries between workers
             wds.tarfile_to_samples(handler=wds.warn_and_continue),
             wds.shuffle(8, handler=wds.warn_and_continue),
-            lambda data: video_process(data, config, eval=False),
+            video_process(config, eval=False),
             wds.shuffle(64, handler=wds.warn_and_continue),
-            lambda data: dynamic_batching(data, config, eval=False),
+            dynamic_batching(config, eval=False),
         ]
 
         eval_pipeline = [
             wds.SimpleShardList(eval_shard_path),
             wds.split_by_worker,
             wds.tarfile_to_samples(handler=wds.warn_and_continue),
-            lambda data: video_process(data, config, eval=True),
-            lambda data: dynamic_batching(data, config, eval=True),
+            video_process(config, eval=True),
+            dynamic_batching(config, eval=True),
         ]
         
         self.train_dataset = wds.DataPipeline(*train_pipeline)

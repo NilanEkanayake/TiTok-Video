@@ -1,7 +1,7 @@
 general:
     wandb:
         project: pixel_titok_video_11
-        run_name: LPIPS144x256-SL172k-BaseLarge-1024Eval
+        run_name: LPIPS144x256-SL155k-BaseLarge-1024Eval-GAN0.4-80+5kWarm-25thLR20k
         log_step_interval: 50
 
     checkpoints:
@@ -9,37 +9,54 @@ general:
         save_interval: 2000
         keep_prior: 6 # -1 to keep all
 
-        resume_from_checkpoint:
+        resume_from_checkpoint: 160k.ckpt
         init_from_checkpoint:
 
-model:
-    titok:
+tokenizer:
+    model:
         patch_size: [4, 8, 8]
+        fsq_levels: [7, 7, 7, 5, 5] # CB size: 8575
         encoder_size: base_thin
         decoder_size: large_thin
 
-        fsq_levels: [7, 7, 7, 5, 5] # CB size: 8575
-
-    disc:
-        patch_size: [4, 8, 8]
-        model_size: small_thin
-
-losses:
-    recon:
+    losses:
         perceptual_weight: 1.0 # 1.0
         perceptual_samples_per_step: 256 # Use -1 to sample all.
         perceptual_sampling_size: 144 # fixed-size input to LPIPS. Always square.
 
-    disc:
-        use_disc: False
-        freeze_encoder: False
-        every_n: 1 # num tokenizer steps for every discriminator step
+    optimizer:
+        lr_schedule: cosine # cosine, constant
+        learning_rate: 1e-4
+        end_lr: 1e-5
+        warmup_steps: 10000
 
+        beta1: 0.9
+        beta2: 0.99
+        weight_decay: 1e-4
 
-        disc_start: 200000
+discriminator:
+    use_disc: True # whether to init disc weights and optimizer. Can be enabled on resume from pretrained non-disc ckpt.
+
+    model:
+        patch_size: [4, 8, 8]
+        model_size: small_thin
+
+    losses:
+        disc_start: 160000
         disc_warmup_steps: 5000 # no GAN loss applied to the tokenizer during this period, but disc is still trained.
-        disc_weight: 0.3
-        disc_weight_warmup_steps: 80000
+        disc_weight: 0.4 # lower to 0.2 - and lower warmup accordingly to ~100k?
+        disc_weight_warmup_steps: 80000 # use adapt d weight instead?
+
+        lecam_weight: 0.001
+
+    optimizer:
+        lr_divisor: 25 # how many times lower the disc LR is than the tokenizer at a given step
+        warmup_steps: 20000
+
+        beta1: 0.9
+        beta2: 0.99
+        weight_decay: 1e-4
+
 
 dataset:
     # train_dataset: "hf://datasets/NilanE/Vchitect_T2V_DataVerse_256p_8fps_wds/shards/{00000..00079}.tar"
@@ -54,22 +71,6 @@ dataset:
     workers: 8
     pin_memory: True # uses extra VRAM when enabled.
 
-optimizer:
-    titok:
-        learning_rate: 1e-4
-        beta1: 0.9
-        beta2: 0.99
-        weight_decay: 1e-4
-        warmup_steps: 10000
-        end_lr: 1e-5
-
-    disc:
-        learning_rate: 5e-5
-        beta1: 0.9
-        beta2: 0.99
-        weight_decay: 1e-4
-        warmup_steps: 80000 # same as weight warm
-        end_lr: 5e-6
 
 training:
     sampling:
@@ -79,7 +80,7 @@ training:
 
         # seq_len is similar to batch size, but raw token count.
         # Set as much as the GPU can handle. The dataloader will try to target this value, but never exceed.
-        train_seq_len: 172032 # per-gpu
+        train_seq_len: 155648 # 172032 # per-gpu
         eval_seq_len: 32768
 
     main:
@@ -88,12 +89,12 @@ training:
         accelerator: 'gpu'
         train_devices: 1
         enable_tf32: True
-        torch_compile: False # True
+        torch_compile: False
 
         seed: 42
         max_grad_norm: 1.0
 
-        use_ema: False # enable alongside disc model
+        use_ema: True # enable alongside disc model
         ema_decay: 0.999 # vitok uses 0.9999
 
     eval:

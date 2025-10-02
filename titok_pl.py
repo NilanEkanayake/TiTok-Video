@@ -16,7 +16,7 @@ import math
 from dataset.video_dataset import WebdatasetVideoDataModule
 from model.titok import TiTok
 from model.losses.loss_module import ReconstructionLoss
-from train_utils.lr_schedulers import get_scheduler
+from train_utils.lr_schedulers import LRSched
 from train_utils.codebook_logging import CodebookLogger
 
 from model.metrics.eval_metrics import EvalMetrics
@@ -40,7 +40,8 @@ class TitokTrainer(L.LightningModule):
     def __init__(self, config):
         super().__init__()
         self.config = config
-        self.use_disc = config.losses.disc.use_disc
+        self.use_disc = config.discriminator.use_disc
+        self.disc_start = self.config.discriminator.losses.disc_start
         self.clip_grads = config.training.main.get('max_grad_norm', False)
         self.use_ema = config.training.main.use_ema
         self.ema_decay = config.training.main.ema_decay
@@ -48,17 +49,14 @@ class TitokTrainer(L.LightningModule):
         self.model = TiTok(config)
         self.eval_metrics = EvalMetrics(config)
         self.loss_module = ReconstructionLoss(config)
+        self.lr_sched = LRSched(config)
 
         if config.training.main.torch_compile:
             # torch._dynamo.config.compiled_autograd = True
             self.model = torch.compile(self.model)
 
         if config.training.eval.log_codebook:
-            self.codebook_logger = CodebookLogger(codebook_size=math.prod(config.model.titok.fsq_levels))
-
-        if config.losses.disc.use_disc and config.losses.disc.freeze_encoder:
-            for param in self.model.encoder.parameters():
-                param.requires_grad = False
+            self.codebook_logger = CodebookLogger(codebook_size=math.prod(config.tokenizer.model.fsq_levels))
 
         if self.use_ema:
             self.ema_model = deepcopy(self.model)
@@ -73,16 +71,15 @@ class TitokTrainer(L.LightningModule):
         orig = batch['video']
         token_counts = batch['token_count']
 
+        ###
         if self.use_disc:
             opt_g, opt_d = self.optimizers()
-            sched_g, sched_d = self.lr_schedulers()
-
             # Bugfix, see: https://github.com/Lightning-AI/pytorch-lightning/issues/17958
             opt_d._on_before_step = lambda : self.trainer.profiler.start("optimizer_step")
             opt_d._on_after_step = lambda : self.trainer.profiler.stop("optimizer_step")
         else:
             opt_g = self.optimizers()
-            sched_g = self.lr_schedulers()
+        ###
 
         ############################
         self.toggle_optimizer(opt_g)
@@ -103,7 +100,7 @@ class TitokTrainer(L.LightningModule):
         if self.global_step % self.config.training.eval.eval_step_interval == 0:
             self.log_dict(grad_norm(self.model, norm_type=2))
         opt_g.step()
-        sched_g.step()
+        loss_dict['lr_g'] = self.lr_sched(opt_g, self.global_step)
 
         if self.use_ema:
             update_ema(self.ema_model, self.model, decay=self.ema_decay)
@@ -111,28 +108,29 @@ class TitokTrainer(L.LightningModule):
         self.untoggle_optimizer(opt_g)
         ############################
 
-        if self.use_disc and self.global_step >= self.config.losses.disc.disc_start and self.global_step % self.config.losses.disc.every_n == 0:
-            # with torch.nn.attention.sdpa_kernel(torch.nn.attention.SDPBackend.MATH):
-                self.toggle_optimizer(opt_d)
-                opt_d.zero_grad(set_to_none=True)
+        if self.use_disc and self.global_step >= self.disc_start:
+            self.toggle_optimizer(opt_d)
+            opt_d.zero_grad(set_to_none=True)
 
-                d_loss, d_loss_dict = self.loss_module(
-                    target=orig,
-                    recon=x,
-                    global_step=self.global_step,
-                    disc_forward=True,
-                    token_counts=token_counts,
-                )
-                loss_dict.update(d_loss_dict)
+            d_loss, d_loss_dict = self.loss_module(
+                target=orig,
+                recon=x,
+                global_step=self.global_step,
+                disc_forward=True,
+                token_counts=token_counts,
+            )
+            loss_dict.update(d_loss_dict)
 
-                self.manual_backward(d_loss)
-                if self.clip_grads:
-                    self.clip_gradients(opt_d, gradient_clip_val=self.config.training.main.max_grad_norm)
-                if self.global_step % self.config.training.eval.eval_step_interval == 0:
-                    self.log_dict(grad_norm(self.loss_module, norm_type=2))
-                opt_d.step()
-                sched_d.step()
-                self.untoggle_optimizer(opt_d)
+            self.manual_backward(d_loss)
+            if self.clip_grads:
+                self.clip_gradients(opt_d, gradient_clip_val=self.config.training.main.max_grad_norm)
+            if self.global_step % self.config.training.eval.eval_step_interval == 0:
+                self.log_dict(grad_norm(self.loss_module, norm_type=2)) # add under header?
+            opt_d.step()
+            loss_dict['lr_d'] = self.lr_sched(opt_d, self.global_step, disc_step=True)
+
+            self.untoggle_optimizer(opt_d)
+        
 
         self.log_dict(loss_dict, prog_bar=True)
 
@@ -192,7 +190,9 @@ class TitokTrainer(L.LightningModule):
         pass
 
     def configure_optimizers(self):
-        opt_conf_g = self.config.optimizer.titok
+        opt_conf_g = self.config.tokenizer.optimizer
+        opt_conf_d = self.config.discriminator.optimizer
+        max_lr = opt_conf_g.learning_rate
 
         # ###
         # exclude = (lambda n, p: p.ndim < 2 or "ln" in n or "bias" in n or 'latent_tokens' in n 
@@ -214,36 +214,18 @@ class TitokTrainer(L.LightningModule):
             betas=[opt_conf_g.beta1, opt_conf_g.beta2],
         )
 
-        lr_g = get_scheduler(
-            name='cosine',
-            optimizer=opt_g,
-            num_warmup_steps=opt_conf_g.warmup_steps,
-            num_training_steps=self.config.training.main.max_steps,
-            base_lr=opt_conf_g.learning_rate,
-            end_lr=opt_conf_g.end_lr,
-        )
-
-        if self.config.losses.disc.use_disc:
-            opt_conf_d = self.config.optimizer.disc
+        if self.use_disc:
             opt_d = optim.AdamW(
                 self.loss_module.disc_model.parameters(),
-                lr=opt_conf_d.learning_rate,
+                lr=max_lr/opt_conf_d.lr_divisor,
                 weight_decay=opt_conf_d.weight_decay,
                 betas=[opt_conf_d.beta1, opt_conf_d.beta2]
             )
 
-            lr_d = get_scheduler(
-                name='cosine',
-                optimizer=opt_d,
-                num_warmup_steps=opt_conf_d.warmup_steps,
-                num_training_steps=self.config.training.main.max_steps - self.config.losses.disc.disc_start, # assume global_step starting from 0
-                base_lr=opt_conf_d.learning_rate,
-                end_lr=opt_conf_d.end_lr,
-            )
-
-            return [opt_g, opt_d], [lr_g, lr_d]
+            return opt_g, opt_d
         else:
-            return [opt_g], [lr_g]
+            return opt_g
+
         
     def state_dict(self):
         # Don't save metrics

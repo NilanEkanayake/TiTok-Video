@@ -6,7 +6,7 @@ import numpy as np
 
 from model.base.blocks import TiTokEncoder, init_weights
 from model.metrics.lpips import LPIPS
-from model.metrics.milo import MILO
+# from model.metrics.milo import MILO
 from torchvision.transforms import v2
 from torchvision.transforms.functional import InterpolationMode
 import random
@@ -15,31 +15,51 @@ import random
 def l1(x, y):
     return torch.abs(x - y)
 
+def lecam_reg(real_pred, fake_pred, ema_real_pred, ema_fake_pred):
+    """Lecam loss for data-efficient and stable GAN training.
+    
+    Described in https://arxiv.org/abs/2104.03310
+    
+    Args:
+      real_pred: Prediction (scalar) for the real samples.
+      fake_pred: Prediction for the fake samples.
+      ema_real_pred: EMA prediction (scalar) for the real samples.
+      ema_fake_pred: EMA prediction for the fake samples.
+    
+    Returns:
+      Lecam regularization loss (scalar).
+    """
+    assert real_pred.ndim == 0 and ema_fake_pred.ndim == 0
+    lecam_loss = torch.mean(torch.pow(torch.relu(real_pred - ema_fake_pred), 2))
+    lecam_loss = lecam_loss + torch.mean(torch.pow(torch.relu(ema_real_pred - fake_pred), 2))
+    return lecam_loss
+
     
 class ReconstructionLoss(nn.Module):
     def __init__(self, config):
         super().__init__()
         self.config = config
 
-        self.perceptual_weight = config.losses.recon.perceptual_weight
+        self.perceptual_weight = config.tokenizer.losses.perceptual_weight
         if self.perceptual_weight > 0.0:
             self.perceptual_model = LPIPS().eval()
             # self.perceptual_model = MILO().eval()
             for param in self.perceptual_model.parameters():
                 param.requires_grad = False
 
-        loss_d = config.losses.disc
-        self.use_disc = loss_d.use_disc
+        loss_d = config.discriminator.losses
+        model_d = config.discriminator.model
+        self.use_disc = config.discriminator.use_disc
         self.disc_weight = loss_d.disc_weight
         self.disc_start = loss_d.disc_start
-        self.disc_warm = loss_d.disc_warmup_steps
+        self.disc_warm = max(loss_d.disc_warmup_steps, 1)
         self.disc_weight_warm = loss_d.disc_weight_warmup_steps
         self.token_range = config.training.sampling.num_token_range
 
         if self.use_disc:
             self.disc_model = TiTokEncoder( # same arch as tokenizer encoder
-                model_size=config.model.disc.model_size,
-                patch_size=config.model.disc.patch_size,
+                model_size=model_d.model_size,
+                patch_size=model_d.patch_size,
                 in_channels=3*2,
                 out_channels=16, # more stable to use more channels?
                 max_grid=config.training.sampling.max_grid,
@@ -49,13 +69,27 @@ class ReconstructionLoss(nn.Module):
             if config.training.main.torch_compile:
                 self.disc_model = torch.compile(self.disc_model)
 
+        self.lecam_weight = loss_d.lecam_weight
+        if self.lecam_weight > 0.0:
+            self.register_buffer('lecam_ema_real', torch.tensor(0.0))
+            self.register_buffer('lecam_ema_fake', torch.tensor(0.0))
+
+
         self.total_steps = config.training.main.max_steps
 
-    
+
+    @torch.no_grad()
+    def update_lecam_ema(self, real, fake, decay=0.999):
+        with torch.autocast(device_type=real.device.type, enabled=False):
+            real, fake = real.float().mean(), fake.float().mean()
+            self.lecam_ema_real.mul_(decay).add_(real, alpha=1 - decay)
+            self.lecam_ema_fake.mul_(decay).add_(fake, alpha=1 - decay)
+
+
     def perceptual_preprocess(self, recon, target, resize_prob=0.25):
         target_out = []
         recon_out = []
-        sample_size = self.config.losses.recon.perceptual_sampling_size
+        sample_size = self.config.tokenizer.losses.perceptual_sampling_size
 
         for trg_frame, rec_frame in zip(target, recon):
             # CHW in
@@ -103,7 +137,7 @@ class ReconstructionLoss(nn.Module):
 
         perceptual_loss = 0.0
         if self.perceptual_weight > 0.0:
-            num_subsample = self.config.losses.recon.perceptual_samples_per_step
+            num_subsample = self.config.tokenizer.losses.perceptual_samples_per_step
 
             target_frames = []
             recon_frames = []
@@ -147,6 +181,7 @@ class ReconstructionLoss(nn.Module):
 
             ######################
             loss_dict['gan_loss'] = g_loss
+            loss_dict['d_weight'] = torch.tensor(d_weight * d_weight_warm)
             # loss_dict['logits_relative'] = logits_relative
 
         total_loss = (
@@ -180,9 +215,20 @@ class ReconstructionLoss(nn.Module):
         logits_real_b, logits_fake_b = self.disc_model([torch.cat([x, y], dim=0) for x, y in zip(target, recon)], token_counts=[2]*B).view(B, 2, -1).mean(-1).chunk(2, dim=1)
         logits_fake = (logits_fake_a + logits_fake_b) / 2
         logits_real = (logits_real_a + logits_real_b) / 2
-        
+
+        lecam_loss = 0.0
+        if self.lecam_weight > 0.0:
+            lecam_loss = self.lecam_weight * lecam_reg(
+                real_pred=logits_real.mean(),
+                fake_pred=logits_fake.mean(),
+                ema_real_pred=self.lecam_ema_real,
+                ema_fake_pred=self.lecam_ema_fake,
+            )
+            self.update_lecam_ema(logits_real, logits_fake)
+            loss_dict['lecam_loss'] = lecam_loss
+
         logits_relative = logits_real - logits_fake
-        total_loss = F.softplus(-logits_relative).mean()
+        total_loss = F.softplus(-logits_relative).mean() + self.lecam_weight * lecam_loss
         
         loss_dict.update({
             "disc_loss": total_loss,

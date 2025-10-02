@@ -24,7 +24,7 @@ class TiTok(nn.Module):
         super().__init__()
         self.config = config
         
-        titok_conf = config.model.titok
+        titok_conf = config.tokenizer.model
         token_size = len(titok_conf.fsq_levels)
 
         self.encoder = TiTokEncoder(
