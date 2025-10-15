@@ -1,7 +1,7 @@
 general:
     wandb:
         project: pixel_titok_video_11
-        run_name: LPIPS144x256-SL155k-BaseLarge-1024Eval-GAN0.4-80+5kWarm-25thLR20k
+        run_name: LPIPS144x256-SL155k-BaseLarge-1024Eval-r3GAN0.4-NoWarm-20thLR-noMomentum-GP0.5
         log_step_interval: 50
 
     checkpoints:
@@ -30,7 +30,7 @@ tokenizer:
         end_lr: 1e-5
         warmup_steps: 10000
 
-        beta1: 0.9
+        beta1: 0.0 # disable momentum for GAN stability
         beta2: 0.99
         weight_decay: 1e-4
 
@@ -42,18 +42,20 @@ discriminator:
         model_size: small_thin
 
     losses:
-        disc_start: 160000
-        disc_warmup_steps: 5000 # no GAN loss applied to the tokenizer during this period, but disc is still trained.
+        disc_start: 0 # 160000
+        disc_warmup_steps: 1 # 5000 # no GAN loss applied to the tokenizer during this period, but disc is still trained.
         disc_weight: 0.4 # lower to 0.2 - and lower warmup accordingly to ~100k?
-        disc_weight_warmup_steps: 80000 # use adapt d weight instead?
+        disc_weight_warmup_steps: 1 # 60000 # use adapt d weight instead?
 
-        lecam_weight: 0.001
+        lecam_weight: 0.0 # 0.005 # not needed anymore?
+        gradient_penalty_weight: 0.5
+        gradient_penalty_noise: 0.1 # 0.01 | https://arxiv.org/pdf/2501.08316
 
     optimizer:
-        lr_divisor: 25 # how many times lower the disc LR is than the tokenizer at a given step
-        warmup_steps: 20000
+        lr_divisor: 20 # how many times lower the disc LR is than the tokenizer at a given step
+        warmup_steps: 1 # 40000 # less? 10k?
 
-        beta1: 0.9
+        beta1: 0.0 # disable momentum for GAN stability
         beta2: 0.99
         weight_decay: 1e-4
 
@@ -94,7 +96,7 @@ training:
         seed: 42
         max_grad_norm: 1.0
 
-        use_ema: True # enable alongside disc model
+        use_ema: True # enable alongside disc model (on resume)
         ema_decay: 0.999 # vitok uses 0.9999
 
     eval:

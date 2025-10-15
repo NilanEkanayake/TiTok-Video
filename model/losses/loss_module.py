@@ -60,7 +60,7 @@ class ReconstructionLoss(nn.Module):
             self.disc_model = TiTokEncoder( # same arch as tokenizer encoder
                 model_size=model_d.model_size,
                 patch_size=model_d.patch_size,
-                in_channels=3*2,
+                in_channels=3,
                 out_channels=16, # more stable to use more channels?
                 max_grid=config.training.sampling.max_grid,
                 max_tokens=self.token_range[1],
@@ -74,7 +74,7 @@ class ReconstructionLoss(nn.Module):
             self.register_buffer('lecam_ema_real', torch.tensor(0.0))
             self.register_buffer('lecam_ema_fake', torch.tensor(0.0))
 
-
+        self.gradient_penalty_weight = loss_d.gradient_penalty_weight
         self.total_steps = config.training.main.max_steps
 
 
@@ -84,7 +84,7 @@ class ReconstructionLoss(nn.Module):
             real, fake = real.float().mean(), fake.float().mean()
             self.lecam_ema_real.mul_(decay).add_(real, alpha=1 - decay)
             self.lecam_ema_fake.mul_(decay).add_(fake, alpha=1 - decay)
-
+    
 
     def perceptual_preprocess(self, recon, target, resize_prob=0.25):
         target_out = []
@@ -116,14 +116,14 @@ class ReconstructionLoss(nn.Module):
         return recon, target
 
 
-    def forward(self, target, recon, global_step, disc_forward=False, last_layer=None, token_counts=None):
+    def forward(self, target, recon, global_step, disc_forward=False):
         if disc_forward:
-            return self._forward_discriminator(target, recon, token_counts)
+            return self._forward_discriminator(target, recon)
         else:
-            return self._forward_generator(target, recon, global_step, last_layer)
+            return self._forward_generator(target, recon, global_step)
         
 
-    def _forward_generator(self, target, recon, global_step, last_layer=None):
+    def _forward_generator(self, target, recon, global_step):
         # target and recon are now lists of CTHW tensors.
         loss_dict = {}
 
@@ -171,13 +171,10 @@ class ReconstructionLoss(nn.Module):
                 param.requires_grad = False
             ############################
 
-            logits_fake_a, logits_real_a = self.disc_model([torch.cat([x, y], dim=0) for x, y in zip(recon, target)], token_counts=[2]*B).view(B, 2, -1).mean(-1).chunk(2, dim=1)
-            logits_real_b, logits_fake_b = self.disc_model([torch.cat([x, y], dim=0) for x, y in zip(target, recon)], token_counts=[2]*B).view(B, 2, -1).mean(-1).chunk(2, dim=1)
-            logits_fake = (logits_fake_a + logits_fake_b) / 2
-            logits_real = (logits_real_a + logits_real_b) / 2
-            
+            logits_real = self.disc_model(target, token_counts=[1]*B).view(B, -1).mean(-1)
+            logits_fake = self.disc_model(recon, token_counts=[1]*B).view(B, -1).mean(-1)
             logits_relative = logits_fake - logits_real
-            g_loss = F.softplus(-logits_relative)
+            g_loss = F.softplus(-logits_relative).mean()
 
             ######################
             loss_dict['gan_loss'] = g_loss
@@ -195,7 +192,7 @@ class ReconstructionLoss(nn.Module):
         return total_loss, {'train/'+k:v.clone().mean().detach() for k,v in loss_dict.items()}
     
     
-    def _forward_discriminator(self, target, recon, token_counts=None):
+    def _forward_discriminator(self, target, recon):
         loss_dict = {}
         
         target = [i.detach().requires_grad_(True).contiguous() for i in target]
@@ -208,13 +205,24 @@ class ReconstructionLoss(nn.Module):
             param.requires_grad = True
         ############################
 
-        # disc model outputs normal dense tensor
+        logits_real = self.disc_model(target, token_counts=[1]*B).view(B, -1).mean(-1)
+        logits_fake = self.disc_model(recon, token_counts=[1]*B).view(B, -1).mean(-1)
+        logits_relative = logits_real - logits_fake
+        d_loss = F.softplus(-logits_relative).mean()
 
-        # https://arxiv.org/abs/2501.05441 (Rp GAN) + https://arxiv.org/abs/2501.00103 (Recon GAN)
-        logits_fake_a, logits_real_a = self.disc_model([torch.cat([x, y], dim=0) for x, y in zip(recon, target)], token_counts=[2]*B).view(B, 2, -1).mean(-1).chunk(2, dim=1)
-        logits_real_b, logits_fake_b = self.disc_model([torch.cat([x, y], dim=0) for x, y in zip(target, recon)], token_counts=[2]*B).view(B, 2, -1).mean(-1).chunk(2, dim=1)
-        logits_fake = (logits_fake_a + logits_fake_b) / 2
-        logits_real = (logits_real_a + logits_real_b) / 2
+        # https://www.arxiv.org/pdf/2509.24935
+        gradient_penalty = 0.0
+        sigma = self.config.discriminator.losses.gradient_penalty_noise
+        if self.gradient_penalty_weight > 0.0:
+            noise = [torch.randn_like(x) * sigma for x in target] # diff noise per sample? averages out?
+            logits_real_noised = self.disc_model([x + y for x, y in zip(target, noise)], token_counts=[1]*B).view(B, -1).mean(-1)
+            logits_fake_noised = self.disc_model([x + y for x, y in zip(recon, noise)], token_counts=[1]*B).view(B, -1).mean(-1)
+            r1_penalty = (logits_real - logits_real_noised)**2
+            r2_penalty = (logits_fake - logits_fake_noised)**2
+
+            loss_dict['r1_penalty'] = r1_penalty
+            loss_dict['r2_penalty'] = r2_penalty
+            gradient_penalty = r1_penalty + r2_penalty
 
         lecam_loss = 0.0
         if self.lecam_weight > 0.0:
@@ -227,8 +235,11 @@ class ReconstructionLoss(nn.Module):
             self.update_lecam_ema(logits_real, logits_fake)
             loss_dict['lecam_loss'] = lecam_loss
 
-        logits_relative = logits_real - logits_fake
-        total_loss = F.softplus(-logits_relative).mean() + self.lecam_weight * lecam_loss
+        total_loss = (
+            d_loss
+            + (self.lecam_weight * lecam_loss)
+            + (self.gradient_penalty_weight / sigma**2 * gradient_penalty)
+        ).mean()
         
         loss_dict.update({
             "disc_loss": total_loss,

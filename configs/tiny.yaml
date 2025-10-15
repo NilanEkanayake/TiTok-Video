@@ -1,7 +1,7 @@
 general:
     wandb:
-        project: pixel_titok_video_11
-        run_name: LPIPS128x24-SL6k-tiny-1024Eval # -GAN0.5-10kWarm-30thLR5k-noEMA
+        project: pixel_titok_video_12
+        run_name: LPIPS128x24-SL6k-tiny-NoEval-r3GAN0.4-NoWarm-15thLR-noMomentum-noEMA-GP0.3-FF
         log_step_interval: 50
 
     checkpoints:
@@ -9,7 +9,7 @@ general:
         save_interval: 1000
         keep_prior: 2 # -1 to keep all
 
-        resume_from_checkpoint: # out_tiny_w512_exp_3/epoch=0-step=11000.ckpt
+        resume_from_checkpoint:
         init_from_checkpoint:
 
 tokenizer:
@@ -25,38 +25,39 @@ tokenizer:
         perceptual_sampling_size: 128 # fixed-size input to LPIPS. Always square.
 
     optimizer:
-        lr_schedule: cos # const
+        lr_schedule: cosine # cosine, constant
         learning_rate: 1e-4
         end_lr: 1e-5
         warmup_steps: 1000
 
-        beta1: 0.9
+        beta1: 0.0 # disable momentum for GAN stability
         beta2: 0.99
         weight_decay: 1e-4
 
 discriminator:
-    use_disc: False # True # whether to init disc weights and optimizer. Can be enabled on resume from pretrained non-disc ckpt.
+    use_disc: True # whether to init disc weights and optimizer. Can be enabled on resume from pretrained non-disc ckpt.
 
     model:
         patch_size: [4, 8, 8]
         model_size: tiny_thin
 
     losses:
-        disc_start: 10000
-        disc_warmup_steps: 0 # no GAN loss applied to the tokenizer during this period, but disc is still trained.
-        disc_weight: 0.5 # lower to 0.2 - and lower warmup accordingly to ~100k?
-        disc_weight_warmup_steps: 10000 # 105000 # 160000
+        disc_start: 0 # 10000
+        disc_warmup_steps: 1 # no GAN loss applied to the tokenizer during this period, but disc is still trained.
+        disc_weight: 0.4 # lower to 0.2 - and lower warmup accordingly to ~100k?
+        disc_weight_warmup_steps: 1 # 10000 # 105000 # 160000
 
-        lecam_weight: 0.001
+        lecam_weight: 0.0 # 0.001
+        gradient_penalty_weight: 0.3
+        gradient_penalty_noise: 0.01 # 0.1?
 
     optimizer:
-        lr_divisor: 30 # how many times lower the disc LR is than the tokenizer at a given step
-        warmup_steps: 5000 # 85000 # disc_weight_warmup_steps + disc_warmup_steps
+        lr_divisor: 15 # how many times lower the disc LR is than the tokenizer at a given step
+        warmup_steps: 1 # 5000 # 85000 # disc_weight_warmup_steps + disc_warmup_steps
 
-        beta1: 0.9
+        beta1: 0.0
         beta2: 0.99
         weight_decay: 1e-4
-
 
 dataset:
     train_dataset: "hf://datasets/NilanE/Vchitect_T2V_DataVerse_256p_8fps_wds/shards/{00000..00079}.tar"
@@ -81,7 +82,7 @@ training:
         eval_seq_len: 4096
 
     main:
-        max_steps: 20000 # 600000
+        max_steps: 600000
         precision: bf16-mixed
         accelerator: 'gpu'
         train_devices: 1
@@ -95,7 +96,7 @@ training:
         ema_decay: 0.999 # vitok uses 0.9999
 
     eval:
-        eval_step_interval: 2000
+        eval_step_interval: 600000 # 1000
         num_eval: 1024
 
         log_codebook: True

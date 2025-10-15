@@ -15,7 +15,9 @@ import math
 
 from dataset.video_dataset import WebdatasetVideoDataModule
 from model.titok import TiTok
-from model.losses.loss_module import ReconstructionLoss
+
+from model.losses.loss_module import ReconstructionLoss # Rp r1/r2 gan
+
 from train_utils.lr_schedulers import LRSched
 from train_utils.codebook_logging import CodebookLogger
 
@@ -91,7 +93,6 @@ class TitokTrainer(L.LightningModule):
             target=orig,
             recon=x,
             global_step=self.global_step,
-            last_layer=self.model.decoder.proj_out.weight
         )
 
         self.manual_backward(loss)
@@ -117,7 +118,6 @@ class TitokTrainer(L.LightningModule):
                 recon=x,
                 global_step=self.global_step,
                 disc_forward=True,
-                token_counts=token_counts,
             )
             loss_dict.update(d_loss_dict)
 
@@ -293,8 +293,9 @@ if __name__ == '__main__':
     model_trainer = TitokTrainer(config)
 
     if init_path:
-        model_sd = torch.load(config.general.checkpoints.init_from_checkpoint, map_location="cpu", weights_only=False)['state_dict']
-        model_trainer.load_state_dict(model_sd, strict=False)
+        model_sd = torch.load(config.general.checkpoints.init_from_checkpoint, map_location="cpu", weights_only=False)
+        model_trainer.load_state_dict(model_sd['state_dict'], strict=False)
+        model_trainer.global_step = model_sd['global_step']
 
     trainer.fit(
         model_trainer,

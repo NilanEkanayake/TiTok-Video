@@ -120,7 +120,7 @@ class Lumina2RotaryPosEmbed(nn.Module):
 
         position_ids[num_tokens:] += num_tokens # offset THW to increment from 1D enc
 
-        if self.axes_lens is not None and self.training:
+        if self.axes_lens is not None and self.training: # instead, check if in_grid less than the max precomputed/axes lens?
             freqs_cis = self._get_precomputed_freqs_cis(position_ids) # use precomputed
         else:
             freqs_cis = self._get_freqs_cis(position_ids)

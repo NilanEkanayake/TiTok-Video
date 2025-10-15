@@ -86,7 +86,7 @@ class TiTokEncoder(nn.Module):
             patch_size=(4, 8, 8),
             in_channels=3,
             out_channels=5,
-            max_grid=(16, 64, 64),
+            max_grid=(32, 256, 256),
             max_tokens=2048,
         ):
         super().__init__()
@@ -154,7 +154,7 @@ class TiTokDecoder(nn.Module):
             patch_size=(4, 8, 8),
             in_channels=5,
             out_channels=3,
-            max_grid=(16, 64, 64),
+            max_grid=(32, 256, 256),
             max_tokens=2048,
         ):
         super().__init__()
@@ -220,3 +220,35 @@ class TiTokDecoder(nn.Module):
         ]
         
         return x # list of video tensors in (CTHW) out
+    
+
+# tests here
+if __name__ == '__main__':
+    import random
+    import time
+
+    B = 16
+    MAX_GRID = [16, 128, 128]
+    PATCH_SIZE = [4, 8, 8]
+    MAX_TL = 256
+
+    device = 'cuda:0'
+    dtype = torch.bfloat16
+
+    model = TiTokEncoder().to(device, dtype)
+
+    x = [torch.rand([3] + [random.randrange(PATCH_SIZE[i], MAX_GRID[i]+1, step=PATCH_SIZE[i]) for i in range(3)]).to(device, dtype) for _ in range(B)]
+    token_counts = [random.randrange(1, MAX_TL+1) for _ in range(B)]
+
+    start_t = time.time()
+    out_fast = model.forward(x, token_counts)
+    fast_t = time.time() - start_t
+
+    start_t = time.time()
+    out_fast = model.forward(x, token_counts)
+    fast_t_2 = time.time() - start_t
+
+    # assert torch.equal(out_norm, out_fast)
+    # print(norm_t)
+    print(fast_t)
+    print(fast_t_2)
