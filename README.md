@@ -32,12 +32,16 @@ Install dependencies with:
 python3 -m pip install -r requirements.txt
 ```
   
-### Inference (instructions outdated):
-Run [the eval notebook](inference.ipynb) in jupyter-lab.
-For a more detailed guide, see [INFERENCE.md](INFERENCE.md)
+### Inference:
+```
+hf download NilanE/TiTok-Video-VariableComp-V1 model.ckpt --local-dir .
+python3 -m pip install jupyterlab
+jupyter lab
+
+# then open inference.ipynb in jupyter-lab and run the cells. 
+```
 
 The resolution, frame count and token count can be set arbitrarily during inference, but the farther they are outside of those seen during training, the more artifacts appear.
-
 
 ### Training:
 #### Launch:
