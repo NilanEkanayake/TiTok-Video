@@ -6,22 +6,10 @@ The tokenizer uses [M-RoPE](https://arxiv.org/abs/2409.12191) and multi-resoluti
 
 ### Reconstructions:
 <div style="display: flex; flex-wrap: wrap; justify-content: center; align-items: flex-start;">
-    <div style="width: 48%; text-align: center; margin: 1%;">
-        <img src="assets/TL487.webp" alt="recon_1" style="width:100%;">
-        <figcaption>487 Tokens</figcaption>
-    </div>
-    <div style="width: 48%; text-align: center; margin: 1%;">
-        <img src="assets/TL218.webp" alt="recon_2" style="width:100%;">
-        <figcaption>218 Tokens</figcaption>
-    </div>
-    <div style="width: 48%; text-align: center; margin: 1%;">
-        <img src="assets/TL872.webp" alt="recon_3" style="width:100%;">
-        <figcaption>872 Tokens</figcaption>
-    </div>
-    <div style="width: 48%; text-align: center; margin: 1%;">
-        <img src="assets/TL557.webp" alt="recon_4" style="width:100%;">
-        <figcaption>557 Tokens</figcaption>
-    </div>
+    <img src="assets/TL487.gif" alt="recon_1" style="width: 48%; text-align: center; margin: 1%;">
+    <img src="assets/TL218.gif" alt="recon_1" style="width: 48%; text-align: center; margin: 1%;">
+    <img src="assets/TL557.gif" alt="recon_1" style="width: 48%; text-align: center; margin: 1%;">
+    <img src="assets/TL872.gif" alt="recon_1" style="width: 48%; text-align: center; margin: 1%;">
 </div>
 
 ### Models:
@@ -34,7 +22,6 @@ The tokenizer uses [M-RoPE](https://arxiv.org/abs/2409.12191) and multi-resoluti
 
 https://huggingface.co/NilanE/TiTok-Video-VariableComp-V1
 
-The resolution, frame count and token count can be set arbitrarily during inference, but the farther they are outside of those seen during training, the more artifacts appear.
 
 ### Model eval:
 TODO
@@ -48,6 +35,8 @@ python3 -m pip install -r requirements.txt
 ### Inference (instructions outdated):
 Run [the eval notebook](inference.ipynb) in jupyter-lab.
 For a more detailed guide, see [INFERENCE.md](INFERENCE.md)
+
+The resolution, frame count and token count can be set arbitrarily during inference, but the farther they are outside of those seen during training, the more artifacts appear.
 
 
 ### Training:
