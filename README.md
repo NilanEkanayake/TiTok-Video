@@ -1,47 +1,66 @@
 # TiTok for Video Tokenization
-## NOTE:
-The readme and inference/eval notebooks are currently outdated but will be refreshed soon.
-### Reconstructions (Current model has GAN artifacts):
-<p>
-<img src="assets/recon_1.gif" alt="teaser" width=49%>
-<img src="assets/recon_2.gif" alt="teaser" width=49%>
-</p>
-<p>
-<img src="assets/recon_3.gif" alt="teaser" width=49%>
-<img src="assets/recon_4.gif" alt="teaser" width=49%>
-</p>
+### Overview:
+This repo contains the code, datasets and checkpoints for an experimental 1D video tokenizer. Research is ongoing, so expect improvements over time!
+
+The tokenizer uses [M-RoPE](https://arxiv.org/abs/2409.12191) and multi-resolution training to allow for flexible input resolutions and compression ratios.
+
+### Reconstructions:
+<div style="display: flex; flex-wrap: wrap; justify-content: center; align-items: flex-start;">
+    <div style="width: 48%; text-align: center; margin: 1%;">
+        <img src="assets/TL487.webp" alt="recon_1" style="width:100%;">
+        <figcaption>487 Tokens</figcaption>
+    </div>
+    <div style="width: 48%; text-align: center; margin: 1%;">
+        <img src="assets/TL218.webp" alt="recon_2" style="width:100%;">
+        <figcaption>218 Tokens</figcaption>
+    </div>
+    <div style="width: 48%; text-align: center; margin: 1%;">
+        <img src="assets/TL872.webp" alt="recon_3" style="width:100%;">
+        <figcaption>872 Tokens</figcaption>
+    </div>
+    <div style="width: 48%; text-align: center; margin: 1%;">
+        <img src="assets/TL557.webp" alt="recon_4" style="width:100%;">
+        <figcaption>557 Tokens</figcaption>
+    </div>
+</div>
 
 ### Models:
-| Stage | Input/Output dimensions | Latent tokens | Codebook Size | Losses | Model |
-| ------------- | ------------- | ------------- | ------------- | ------------- | ------------- |
-| 3 | 128x128p, 32 frames | 128 | ~4096 | MSE+LPIPS+reconGAN | [checkpoint](https://huggingface.co/NilanE/TiTok-Video-128p-32f-128tok) |
+#### V1:
+- Resolutions: 144-192p, different aspect ratios.
+- Frame counts: 8-20
+- Token counts: 128-1024
+- Codebook size: 8575
+- Parameters: ~350m?
+
+https://huggingface.co/NilanE/TiTok-Video-VariableComp-V1
+
+The resolution, frame count and token count can be set arbitrarily during inference, but the farther they are outside of those seen during training, the more artifacts appear.
 
 ### Model eval:
 TODO
 
-## Setup:
+### Setup:
 Install dependencies with:
 ```
 python3 -m pip install -r requirements.txt
 ```
   
-## Inference:
+### Inference (instructions outdated):
 Run [the eval notebook](inference.ipynb) in jupyter-lab.
 For a more detailed guide, see [INFERENCE.md](INFERENCE.md)
 
 
-## Training:
+### Training:
 #### Launch:
 ```
 PYTHONPATH=./ python3 titok_pl.py config=configs/tiny.yaml
 ```
-**Notes:**
-* A couple WDS-format datasets are linked below, minor code tweaks might be required for some of them.
-
 ---
 
+### Other:
 #### Dataset links:
 ```
+https://huggingface.co/datasets/NilanE/Vchitect_T2V_DataVerse_256p_8fps_wds (lighter version of Vchitect_T2V_DataVerse)
 https://huggingface.co/datasets/Vchitect/Vchitect_T2V_DataVerse
 https://huggingface.co/datasets/sailvideo/MiraData-v1
 https://huggingface.co/datasets/sailvideo/webvid10m
@@ -50,10 +69,12 @@ https://huggingface.co/datasets/TIGER-Lab/VISTA-400K
 https://huggingface.co/datasets/LanguageBind/Open-Sora-Plan-v1.1.0
 ```
 
-#### Uses code from:
+#### Uses code/ideas from:
 ```
 https://github.com/bytedance/1d-tokenizer
 https://github.com/ShivamDuggal4/adaptive-length-tokenizer
 https://github.com/lucidrains/vector-quantize-pytorch
 https://github.com/microsoft/VidTok
+https://github.com/hywang66/LARP
+...and more, cited within the codebase.
 ```

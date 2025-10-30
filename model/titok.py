@@ -57,6 +57,10 @@ class TiTok(nn.Module):
         x = self.decoder(x, token_counts, grids)
         return x
     
+    def decode_indices(self, indices, token_counts, grids):
+        x_q = self.quantize.indices_to_codes(indices).to(indices.device, next(self.decoder.parameters()).dtype) # expects B*L in
+        return self.decode(x_q, token_counts, grids)
+    
     def forward(self, x, token_counts):
         grids = [vid.shape[1:] for vid in x] # c|THW|
         x_q, out_dict = self.encode(x, token_counts)
