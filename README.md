@@ -5,11 +5,11 @@ This repo contains the code, datasets and checkpoints for an experimental 1D vid
 The tokenizer uses [M-RoPE](https://arxiv.org/abs/2409.12191) and multi-resolution training to allow for flexible input resolutions and compression ratios.
 
 ### Reconstructions:
-<div style="display: flex; flex-wrap: wrap; justify-content: center; align-items: flex-start;">
-    <img src="assets/TL487.gif" alt="recon_1" style="width: 48%; text-align: center; margin: 1%;">
-    <img src="assets/TL218.gif" alt="recon_1" style="width: 48%; text-align: center; margin: 1%;">
-    <img src="assets/TL557.gif" alt="recon_1" style="width: 48%; text-align: center; margin: 1%;">
-    <img src="assets/TL872.gif" alt="recon_1" style="width: 48%; text-align: center; margin: 1%;">
+<div>
+    <img src="assets/TL487.gif" alt="recon_1" style="width: 98%; margin: 1%;">
+    <img src="assets/TL218.gif" alt="recon_2" style="width: 98%; margin: 1%;">
+    <img src="assets/TL872.gif" alt="recon_4" style="width: 98%; margin: 1%;">
+    <img src="assets/TL557.gif" alt="recon_3" style="width: 98%; margin: 1%;">
 </div>
 
 ### Models:
