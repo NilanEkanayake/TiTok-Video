@@ -29,6 +29,7 @@ TODO
 ### Setup:
 Install dependencies with:
 ```
+python3 -m pip install -U flash-attn --no-build-isolation
 python3 -m pip install -r requirements.txt
 ```
   
