@@ -1,0 +1,89 @@
+general:
+    wandb:
+        project: video_autoencoder_basic
+        run_name: LPIPS128x24-SL6k-tiny-GAN0.4-dLR0.15-fast_iRoPE-sharedMask
+        log_step_interval: 50
+
+    checkpoints:
+        save_path: out_ckpt
+        save_interval: 1000
+        keep_prior: 2 # -1 to keep all
+        resume_from_checkpoint:
+        init_from_checkpoint:
+
+tokenizer:
+    model:
+        patch_size: [4, 8, 8]
+        fsq_levels: [7, 5, 5, 5, 5] # [8, 8, 8, 6, 5] - 16k
+        encoder_size: tiny
+        decoder_size: tiny
+
+    losses:
+        disc_weight: 0.4 # 0.0 to disable
+        perceptual_weight: 1.0
+        gram_weight: 0.0 # uses same model/pass as perceptual loss
+        perceptual_samples_per_step: 24 # Use -1 to sample all.
+        perceptual_sampling_size: 128 # fixed-size input to LPIPS. Always square.
+        
+
+discriminator:
+    model:
+        patch_size: [4, 8, 8]
+        model_size: tiny
+
+    losses:
+        gp_weight: 0.1 # 0.1 # 0.2
+        gp_noise: 0.1 # 0.01 | 0.1 for video?
+        centering_weight: 0.01 # zero-centers real/fake logits
+
+optimizer:
+    learning_rate: 1e-4
+    end_lr: 1e-5
+    beta1: 0.5 # 0.0 | reduce momentum for GAN stability
+    beta2: 0.96
+    warmup_steps: 1000
+    weight_decay: 1e-4
+    disc_lr_ratio: 0.15 # 0.2 | 1 = Same LR, 0.5 = Half LR
+
+dataset:
+    train_dataset: "hf://datasets/NilanE/Vchitect_T2V_DataVerse_256p_8fps_wds/shards/{00000..00079}.tar"
+    eval_dataset: "hf://datasets/facebook/PE-Video/test/{000000..000029}.tar"
+    workers: 3
+    pin_memory: False # uses extra VRAM when enabled.
+
+
+training:
+    sampling:
+        token_range: [1, 128]
+        min_grid: [8, 128, 128]
+        max_grid: [16, 168, 168]
+        fps_range: [3, 5]
+        max_aspect_ratio: 2
+
+        # seq_len is similar to batch size, but raw token count.
+        # Set as much as the GPU can handle. The dataloader will try to target this value, but never exceed.
+        train_seq_len: 6144
+        eval_seq_len: 4096
+
+    main:
+        max_steps: 600000
+        precision: bf16-mixed
+        accelerator: 'gpu'
+        train_devices: 1
+        enable_tf32: True
+        torch_compile: False
+
+        seed: 42
+        max_grad_norm: 1.0
+
+    eval:
+        eval_step_interval: 1000
+        eval_samples: 1024
+
+        log_codebook: True
+        log_metrics: ['ssim', 'psnr', 'fvd'] # ['ssim', 'psnr', 'fvd', 'jedi']
+        log_recon_num: 16
+
+        jedi_jepa_model: vit_large # vit_huge
+        random_recon: True # whether to sample recon videos randomly from the eval set, or take the first log_recon_num
+        clear_cache: True
