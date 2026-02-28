@@ -27,9 +27,8 @@ class EvalMetrics(nn.Module):
 
     
     def update(self, recon, target):
-        for m in self.metrics.keys(): # or use autocast? Efficiency doesn't matter as much since eval is lightweight/sporadic.
-            if self.metrics[m][0].device != target[0].device:
-                self.metrics[m][0].to(target[0].device)
+        for metric, t in self.metrics.values(): # or use autocast? Efficiency doesn't matter as much since eval is lightweight/sporadic.
+            metric.to(target[0].device)
 
         for x, y in zip(recon, target):
             x = x.clamp(-1, 1)
