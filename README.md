@@ -1,0 +1,2 @@
+This readme is a temporary placeholder until the new tokenizer v2 has been fleshed out. Checkpoints will be added later as well.  
+The old version has been moved [here](https://github.com/NilanEkanayake/TiTok-Video/tree/old-variableComp).
