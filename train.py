@@ -171,7 +171,7 @@ class TitokTrainer(L.LightningModule):
         opt_conf_g = self.config.optimizer
         lr = opt_conf_g.learning_rate
         elr = opt_conf_g.end_lr
-        dlr = opt_conf_g.disc_lr_ratio
+        dlr_ratio = opt_conf_g.disc_lr_ratio
         wd = opt_conf_g.weight_decay
 
         b1 = opt_conf_g.beta1
@@ -199,7 +199,7 @@ class TitokTrainer(L.LightningModule):
         opt_d = optim.AdamW(
             self.loss_module.disc_model.parameters(),
             weight_decay=wd,
-            lr=lr*dlr, 
+            lr=lr*dlr_ratio, 
             betas=[b1, b2],
         )
 
@@ -208,8 +208,8 @@ class TitokTrainer(L.LightningModule):
             optimizer=opt_d,
             num_warmup_steps=warm_steps,
             num_training_steps=max_steps,
-            base_lr=lr*dlr,
-            end_lr=elr*dlr,
+            base_lr=lr*dlr_ratio,
+            end_lr=elr*dlr_ratio,
         )
 
         return [opt_g, opt_d], [lr_g, lr_d]
