@@ -1,5 +1,6 @@
 import torch
-import pytorch_lightning as pl
+import lightning as L
+from torchvision import tv_tensors
 from torchvision.transforms import v2, functional
 from decord import VideoReader, cpu, bridge
 import io
@@ -41,6 +42,7 @@ def _video_process(data, config=None, eval=False):
     min_grid = cs.min_grid
     fps_range = cs.fps_range
     max_aspect_ratio = cs.max_aspect_ratio
+    min_scale = cs.min_scale
 
     patch_size = config.tokenizer.model.patch_size # eg. [4, 8, 8]
     out_dtype = get_dtype(config)
@@ -78,30 +80,38 @@ def _video_process(data, config=None, eval=False):
 
                                 if in_grid[0] < end_idx: # end condition
                                     break
-
-                                chunk_indices = np.linspace(start_idx, end_idx - 1, chunk_num_frames, dtype=int).tolist()
-                                chunk = torch.Tensor(vr.get_batch(chunk_indices))
                                 
+                                ###
                                 chunk_height = random.randrange(min_grid[1], min(max_grid[1], in_grid[1])+1, step=patch_size[1])
                                 # make sure the ratio check is multiple of patch_size - might be slightly over the max aspect ratio, doesn't matter
-                                width_error = (chunk_height//max_aspect_ratio) % patch_size[2]
-                                min_width = max(min_grid[2], chunk_height//max_aspect_ratio - width_error)
-                                max_width = min(max_grid[2], in_grid[2], int(chunk_height*max_aspect_ratio) - width_error)
+                                width_error = int(chunk_height/max_aspect_ratio) % patch_size[2]
+                                min_width = max(min_grid[2], int(chunk_height/max_aspect_ratio) - width_error)
+                                max_width = min(max_grid[2], in_grid[2], int(chunk_height*max_aspect_ratio))
                                 chunk_width = random.randrange(min_width, max_width+1, step=patch_size[2])
+                                ###
                                 
                                 if eval: # leave random resolution and frames in to see model's multi-res ability
                                     transform = v2.Compose([
-                                        v2.Resize(size=max(chunk_height, chunk_width), interpolation=functional.InterpolationMode.BICUBIC, antialias=True),
+                                        v2.Resize(size=max(chunk_height, chunk_width), interpolation=v2.InterpolationMode.BICUBIC, antialias=True),
                                         v2.CenterCrop(size=(chunk_height, chunk_width)),
                                     ])
                                 else:
                                     transform = v2.Compose([
-                                        v2.RandomResizedCrop(size=(chunk_height, chunk_width), interpolation=functional.InterpolationMode.BICUBIC, antialias=True),
+                                        v2.RandomResizedCrop(
+                                            size=(chunk_height, chunk_width),
+                                            scale=(min_scale, 1.0), # see at least min_scale*100 % of frame
+                                            ratio=(chunk_width/chunk_height, chunk_width/chunk_height), # fixed ratio - reverse?
+                                            interpolation=v2.InterpolationMode.BICUBIC, antialias=True,
+                                        ),
                                         v2.RandomHorizontalFlip(p=0.5),                    
                                     ])
 
-                                # need separate resolutions for transforms.
+                                ###
+                                chunk_indices = np.linspace(start_idx, end_idx - 1, chunk_num_frames, dtype=int).tolist()
+                                chunk = torch.as_tensor(vr.get_batch(chunk_indices)) # .float()
+
                                 chunk = chunk.permute(0, 3, 1, 2)
+                                chunk = tv_tensors.Video(chunk) # needed?
                                 chunk = transform(chunk)
                                 chunk = chunk.permute(1, 0, 2, 3)
 
@@ -166,32 +176,31 @@ video_process = pipelinefilter(_video_process)
 dynamic_batching = pipelinefilter(_dynamic_batching)
 
 
-class WebdatasetVideoDataModule(pl.LightningModule):
+class WDSVideoDataModule(L.LightningDataModule):
     def __init__(self, config):
         super().__init__()
-        cd = config.dataset
-        train_shard_path=cd.train_dataset
-        eval_shard_path=cd.eval_dataset
+        self.config = config
+        self.num_workers = config.dataset.workers
+        self.pin_memory = config.dataset.pin_memory
 
-        self.num_workers = cd.workers
-        self.pin_memory = cd.pin_memory
-
+    def setup(self, stage: str):
+        cd = self.config.dataset
         train_pipeline = [
-            wds.ResampledShards(train_shard_path), # no handler?
+            wds.ResampledShards(cd.train_dataset), # no handler?
             wds.split_by_worker, # no overlapping entries between workers
             wds.tarfile_to_samples(handler=wds.warn_and_continue),
             wds.shuffle(8, handler=wds.warn_and_continue), # no hardcode?
-            video_process(config, eval=False),
+            video_process(self.config, eval=False),
             wds.shuffle(64, handler=wds.warn_and_continue),
-            dynamic_batching(config, eval=False),
+            dynamic_batching(self.config, eval=False),
         ]
 
         eval_pipeline = [
-            wds.SimpleShardList(eval_shard_path),
+            wds.SimpleShardList(cd.eval_dataset),
             wds.split_by_worker,
             wds.tarfile_to_samples(handler=wds.warn_and_continue),
-            video_process(config, eval=True),
-            dynamic_batching(config, eval=True),
+            video_process(self.config, eval=True),
+            dynamic_batching(self.config, eval=True),
         ]
         
         self.train_dataset = wds.DataPipeline(*train_pipeline)
@@ -201,5 +210,8 @@ class WebdatasetVideoDataModule(pl.LightningModule):
     def train_dataloader(self):
         return wds.WebLoader(self.train_dataset, batch_size=None, pin_memory=self.pin_memory, num_workers=self.num_workers, persistent_workers=True)
     
-    def eval_dataloader(self):
+    def val_dataloader(self):
         return wds.WebLoader(self.eval_dataset, batch_size=None, pin_memory=self.pin_memory, num_workers=1, persistent_workers=True)
+    
+    def teardown(self, stage: str):
+        pass

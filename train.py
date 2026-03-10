@@ -13,7 +13,7 @@ from einops import rearrange
 import numpy as np
 import math
 
-from dataset.video_dataset import WebdatasetVideoDataModule
+# from dataset.video_dataset import WDSVideoDataModule
 from model.titok import TiTok
 
 from model.losses.loss_module import ReconstructionLoss # Rp r1/r2 gan
@@ -225,6 +225,7 @@ if __name__ == '__main__':
     yaml_conf = OmegaConf.load(cli_conf.config)
     config = OmegaConf.merge(yaml_conf, cli_conf)
     ct = config.training
+    cd = config.dataset
 
     L.seed_everything(ct.main.seed)
 
@@ -247,8 +248,19 @@ if __name__ == '__main__':
     )
     
     wandb_logger = WandbLogger(name=config.general.wandb.run_name, project=config.general.wandb.project)
-    dataloaders = WebdatasetVideoDataModule(config)
     model_trainer = TitokTrainer(config)
+
+    ###
+    ds_ext = cd.train_dataset[-4:]
+    assert cd.eval_dataset[-4:] == ds_ext, "train and eval datasets much share format"
+    if ds_ext == '.tar':
+        from dataset.video_dataset import WDSVideoDataModule as datamodule
+    elif ds_ext == '.csv':
+        from dataset.video_dataset_csv import CSVVideoDataModule as datamodule
+    else:
+        raise Exception(f"Unsupported dataset format: {ds_ext}")
+    ###
+
 
     if init_path:
         model_sd = torch.load(config.general.checkpoints.init_from_checkpoint, map_location="cpu", weights_only=False)
@@ -269,7 +281,6 @@ if __name__ == '__main__':
 
     trainer.fit(
         model_trainer,
-        train_dataloaders=dataloaders.train_dataloader(),
-        val_dataloaders=dataloaders.eval_dataloader(),
+        datamodule=datamodule(config),
         ckpt_path=resume_path if resume_path else None,
     )
