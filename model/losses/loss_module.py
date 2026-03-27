@@ -39,7 +39,7 @@ class ReconstructionLoss(nn.Module):
         self.disc_weight = loss_c.disc_weight
 
         if self.disc_weight > 0.0:
-            self.disc_tokens = 4 # extra as register tokens
+            self.disc_tokens = model_d.register_tokens + 1
             self.disc_model = TiTokEncoder( # same arch as tokenizer encoder
                 model_size=model_d.model_size,
                 patch_size=model_d.patch_size,
@@ -50,24 +50,29 @@ class ReconstructionLoss(nn.Module):
             if config.training.main.torch_compile:
                 self.disc_model = torch.compile(self.disc_model)
 
-        self.gp_weight = loss_d.gp_weight
+        self.gp_decay = loss_d.gp_decay_steps
+        self.gp_weights = [loss_d.gp_start_weight, loss_d.gp_end_weight]
         self.gp_noise = loss_d.gp_noise
         self.centering_weight = loss_d.centering_weight
         self.total_steps = config.training.main.max_steps
         
 
     def perceptual_preprocess(self, target, recon, resize_prob=0.25):
+        B = len(target)
         target_out = []
         recon_out = []
         sample_size = self.config.tokenizer.losses.perceptual_sampling_size
         perceptual_samples = self.config.tokenizer.losses.perceptual_samples_per_step
 
-        if perceptual_samples == -1:
-            perceptual_samples = len(target)
+        if perceptual_samples == -1 or perceptual_samples > B:
+            perceptual_samples = B
 
-        for i, (trg_frame, rec_frame) in enumerate(sorted(zip(target, recon), key=lambda k: random.random())): # randomize order | list() before sorted?
-            # CHW in
-            rec_frame = rec_frame.clamp(-1, 1)
+
+        # faster to do (a)range + shuffle + cut for selected indices, then loop?
+        selected = torch.randperm(B)[:perceptual_samples].tolist()
+        for i in selected:
+            rec_frame = recon[i].clamp(-1, 1)
+            trg_frame = target[i] # .clamp(-1, 1)
 
             # random resize
             H, W = trg_frame.shape[1:]
@@ -85,8 +90,7 @@ class ReconstructionLoss(nn.Module):
             target_out.append(trg_frame)
             recon_out.append(rec_frame)
 
-            if i >= perceptual_samples:
-                break 
+
 
         target = torch.stack(target_out, dim=0).contiguous() # now FCHW
         recon = torch.stack(recon_out, dim=0).contiguous()
@@ -97,13 +101,13 @@ class ReconstructionLoss(nn.Module):
         B = len(x)
         # logits = self.disc_model(x, token_counts=[self.disc_tokens]*B).view(B, -1).mean(-1)
         token_counts = torch.tensor([self.disc_tokens], device=x[0].device, dtype=torch.int32).repeat(B)
-        logits = self.disc_model(x, token_counts).view(B, -1).mean(-1)
-        return logits
+        logits = self.disc_model(x, token_counts).view(B, -1)
+        return logits[:, 0] # take first token only? Or average all?
         
 
-    def forward(self, target, recon, disc_forward=False):
+    def forward(self, target, recon, global_step, disc_forward=False):
         if disc_forward:
-            return self._forward_discriminator(target, recon)
+            return self._forward_discriminator(target, recon, global_step)
         else:
             return self._forward_generator(target, recon)
         
@@ -160,10 +164,11 @@ class ReconstructionLoss(nn.Module):
         ).mean()
         loss_dict['total_loss'] = total_loss
 
-        return total_loss, {'gen/'+k:v.clone().mean().detach() for k,v in loss_dict.items()}
+        # return total_loss, {'gen/'+k:v.clone().mean().detach() for k,v in loss_dict.items()}
+        return total_loss, {'tokenizer/'+k:v.clone().mean().detach() for k,v in loss_dict.items()}
     
     
-    def _forward_discriminator(self, target, recon):
+    def _forward_discriminator(self, target, recon, global_step):
         loss_dict = {}
         
         target = [i.detach().requires_grad_(True).contiguous() for i in target]
@@ -184,8 +189,9 @@ class ReconstructionLoss(nn.Module):
 
 
         # https://www.arxiv.org/pdf/2509.24935
+        gp_weight = self.gp_weights[0]-(min(global_step/self.gp_decay, 1.0)*(self.gp_weights[1]-self.gp_weights[0]))
         gradient_penalty = 0.0
-        if self.gp_weight > 0.0:
+        if gp_weight > 0.0:
             noise = [torch.randn_like(x) * self.gp_noise for x in target] # diff noise per sample? averages out?
             logits_real_noised = self.disc_wrapper([x + y for x, y in zip(target, noise)])
             logits_fake_noised = self.disc_wrapper([x + y for x, y in zip(recon, noise)])
@@ -206,9 +212,10 @@ class ReconstructionLoss(nn.Module):
 
         total_loss = (
             d_loss
-            + (self.gp_weight / self.gp_noise**2 * gradient_penalty)
+            + (gp_weight / self.gp_noise**2 * gradient_penalty)
             + (self.centering_weight * centering_loss)
         ).mean()
         loss_dict['total_loss'] = total_loss
 
-        return total_loss, {'disc/'+k:v.clone().mean().detach() for k,v in loss_dict.items()}
+        # return total_loss, {'disc/'+k:v.clone().mean().detach() for k,v in loss_dict.items()}
+        return total_loss, {'discriminator/'+k:v.clone().mean().detach() for k,v in loss_dict.items()}

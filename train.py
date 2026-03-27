@@ -70,6 +70,7 @@ class TitokTrainer(L.LightningModule):
         loss, loss_dict = self.loss_module(
             target=orig,
             recon=x,
+            global_step=self.global_step,
         )
 
         self.manual_backward(loss)
@@ -92,6 +93,7 @@ class TitokTrainer(L.LightningModule):
             d_loss, d_loss_dict = self.loss_module(
                 target=orig,
                 recon=x,
+                global_step=self.global_step,
                 disc_forward=True,
             )
             loss_dict.update(d_loss_dict)

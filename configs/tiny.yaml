@@ -1,7 +1,7 @@
 general:
     wandb:
         project: video_autoencoder_basic
-        run_name: LPIPS128x24-SL6k-tiny-GAN0.4-dLR0.15-fast_iRoPE-sharedMask
+        run_name: LPIPS128x24-tiny-SL10k-GAN0.4-dlr0.05-GN0.05-GP0.2
         log_step_interval: 50
 
     checkpoints:
@@ -30,10 +30,14 @@ discriminator:
     model:
         patch_size: [4, 8, 8]
         model_size: tiny
+        register_tokens: 4
 
     losses:
-        gp_weight: 0.1 # 0.1 # 0.2
-        gp_noise: 0.1 # 0.01 | 0.1 for video?
+        gp_decay_steps: 10000
+        gp_start_weight: 0.5
+        gp_end_weight: 0.2
+
+        gp_noise: 0.05 # 0.1 for video?
         centering_weight: 0.01 # zero-centers real/fake logits
 
 optimizer:
@@ -43,7 +47,7 @@ optimizer:
     beta2: 0.96
     warmup_steps: 1000
     weight_decay: 1e-4
-    disc_lr_ratio: 0.15 # 0.2 | 1 = Same LR, 0.5 = Half LR
+    disc_lr_ratio: 0.05 # 0.2 | 1 = Same LR, 0.5 = Half LR
 
 dataset:
     train_dataset: "hf://datasets/NilanE/Vchitect_T2V_DataVerse_256p_8fps_wds/shards/{00000..00079}.tar"
@@ -54,15 +58,24 @@ dataset:
 
 training:
     sampling:
+        # variable
         token_range: [1, 128]
         min_grid: [8, 128, 128]
         max_grid: [16, 168, 168]
         fps_range: [3, 5]
+
+        # # fixed
+        # token_range: [128, 128]
+        # min_grid: [8, 128, 128]
+        # max_grid: [8, 128, 128]
+        # fps_range: [4, 4]
+
         max_aspect_ratio: 2
+        min_scale: 0.25 # min crop area
 
         # seq_len is similar to batch size, but raw token count.
         # Set as much as the GPU can handle. The dataloader will try to target this value, but never exceed.
-        train_seq_len: 6144
+        train_seq_len: 10240 # 6144
         eval_seq_len: 4096
 
     main:
